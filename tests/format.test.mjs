@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { escapeHtml, formatDiffLines, formatCustomInstructions } from "../scripts/build-context.mjs"
+import { escapeHtml, formatDiffLines, formatCustomInstructions } from "../skills/loupe/scripts/build-context.mjs"
 
 test("escapeHtml escapes markup", () => {
   assert.equal(escapeHtml(`<a href="x">&'`), "&lt;a href=&quot;x&quot;&gt;&amp;&#x27;")

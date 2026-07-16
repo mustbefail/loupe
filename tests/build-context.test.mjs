@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { parseDiff, fnmatch, matchesInstruction, parseGeneratedAttrs } from "../scripts/build-context.mjs"
+import { parseDiff, fnmatch, matchesInstruction, parseGeneratedAttrs } from "../skills/loupe/scripts/build-context.mjs"
 
 test("parseDiff extracts added/modified/new/rename/binary records", () => {
   const raw = [

@@ -11,11 +11,36 @@ Together they form `loupe` — an optical instrument for close examination and i
 
 ## Installation
 
-Symlink this repository to your Claude Code skills directory:
+`loupe` ships as a Claude Code plugin distributed through its own marketplace.
+Add the marketplace, then install the plugin:
 
-```bash
-ln -s ~/projects/loupe ~/.claude/skills/loupe
 ```
+/plugin marketplace add mustbefail/loupe
+/plugin install loupe@loupe
+```
+
+Once installed, invoke it from inside any git repository — either ask Claude
+to run a loupe review of the current branch, or call the `loupe` skill
+directly. All arguments are optional:
+
+```
+--base <ref>            # ref to diff against (default: repo's default branch)
+--max-iterations <n>    # hard cap on review→fix passes (default: 3)
+--fix | --no-fix        # whether to auto-fix actionable findings (default: --fix)
+--severity-gate <level> # min severity to auto-fix: blocker|high|medium|low (default: high)
+```
+
+### Local development
+
+Working on `loupe` itself? Point Claude Code at this checkout as a local
+marketplace instead of the GitHub one:
+
+```
+/plugin marketplace add ./
+/plugin install loupe@loupe
+```
+
+Run the test suite with `npm test`.
 
 ## External rules: `REVIEW.yaml`
 
@@ -61,3 +86,9 @@ with the base lenses.
 - Custom-instruction glob matching is O(n²) per `**` segment on non-matching paths; fine for real git paths (~3ms worst case) but pathological multi-`**` patterns on very deep trees could be slow.
 - `parseDiff` does not decode git's quoted paths (`core.quotePath`), so changed files with spaces or non-ASCII names may be skipped from review.
 - `check-attr` receives all changed paths as CLI args, which could hit `ARG_MAX` on an extremely large diff.
+
+## Acknowledgements
+
+`loupe` was built under the inspiration of GitLab Duo's code reviewer — its
+diff-scoped, per-file custom-instruction review model shaped this skill's
+design.

@@ -5,9 +5,9 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import { buildLenses } from "../scripts/build-context.mjs"
+import { buildLenses } from "../skills/loupe/scripts/build-context.mjs"
 
-const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "build-context.mjs")
+const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "skills", "loupe", "scripts", "build-context.mjs")
 
 test("buildLenses produces custom + base lenses over matched files", () => {
   const reviewable = [

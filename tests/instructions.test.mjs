@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { parseInstructionsYaml, loadCustomInstructions } from "../scripts/build-context.mjs"
+import { parseInstructionsYaml, loadCustomInstructions } from "../skills/loupe/scripts/build-context.mjs"
 
 const YAML = `---
 # comment line

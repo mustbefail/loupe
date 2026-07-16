@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "loupe",
+  "description": "Marketplace for loupe — a headless iterative code-review skill for Claude Code.",
+  "owner": {
+    "name": "Viktor Kushnir"
+  },
+  "plugins": [
+    {
+      "name": "loupe",
+      "source": "./",
+      "description": "Headless iterative code review — an ensemble of per-lens reviewer subagents plus a judge, looping review→fix→review until convergence.",
+      "version": "0.1.0",
+      "license": "MIT",
+      "category": "code-quality",
+      "keywords": [
+        "code-review",
+        "review",
+        "headless"
+      ]
+    }
+  ]
+}

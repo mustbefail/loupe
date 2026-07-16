@@ -97,13 +97,16 @@ Parsed from the skill invocation's argument string. All are optional.
 
 Run:
 ```
-node <loupe-skill-dir>/scripts/build-context.mjs [--base <base>]
+node "${CLAUDE_SKILL_DIR}/scripts/build-context.mjs" [--base <base>]
 ```
 from inside the reviewed repo (the script defaults `--repo` to
 `process.cwd()`, which is the reviewed repo since that's where this skill
-was invoked). `<loupe-skill-dir>` is the directory this `SKILL.md` file
-lives in — the script is always at `scripts/build-context.mjs` relative to
-it, wherever this skill was installed. Include `--base <base>` only when
+was invoked). `${CLAUDE_SKILL_DIR}` is the directory this `SKILL.md` file
+lives in — Claude Code exports it when loupe runs as an installed plugin.
+The script is always at `scripts/build-context.mjs` relative to that
+directory, wherever this skill was installed; if the variable isn't set in
+your environment, substitute the absolute path to this skill's own
+directory. Include `--base <base>` only when
 the user supplied one via the skill's own `--base` argument; otherwise omit
 it and let the script's own default-branch detection run (symbolic-ref to
 `origin/HEAD`, falling back to `main` then `master`) — do not duplicate
