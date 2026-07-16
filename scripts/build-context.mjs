@@ -165,9 +165,13 @@ export function loadCustomInstructions(repo, deps = { readFileSync, existsSync }
   }))
 }
 
+// Part of the context-formatting API retained for callers/tests, though main()'s
+// per-lens path below doesn't invoke it.
 export const escapeHtml = (s) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#x27;")
 
+// Diff line content is passed through raw (not HTML-escaped) because the consumer
+// is an LLM reading tagged context, not a browser.
 export function formatDiffLines(rawDiff) {
   if (!rawDiff.trim() || rawDiff.includes("Binary files")) return ""
   const lines = []
@@ -189,6 +193,8 @@ export function formatDiffLines(rawDiff) {
   return lines.join("\n")
 }
 
+// Part of the context-formatting API retained for callers/tests, though main()'s
+// per-lens path doesn't invoke it either.
 export function formatCustomInstructions(instructions) {
   if (!instructions.length) return ""
   const items = instructions.map((ins) => {
