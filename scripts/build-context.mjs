@@ -164,3 +164,37 @@ export function loadCustomInstructions(repo, deps = { readFileSync, existsSync }
     exclude_patterns: i.fileFilters.filter((f) => f.startsWith("!")).map((f) => f.slice(1)),
   }))
 }
+
+export const escapeHtml = (s) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#x27;")
+
+export function formatDiffLines(rawDiff) {
+  if (!rawDiff.trim() || rawDiff.includes("Binary files")) return ""
+  const lines = []
+  let lineOld = 1, lineNew = 1
+  for (const line of rawDiff.split("\n")) {
+    if (!line) continue
+    if (line.startsWith("@@")) {
+      const m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
+      if (m) { lineOld = Number(m[1]); lineNew = Number(m[2]); lines.push(`<chunk_header>${line}</chunk_header>`) }
+      continue
+    }
+    if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff --git")) continue
+    if (line.startsWith("\\")) { lines.push(`<line type="nonewline" old_line="${lineOld}" new_line="${lineNew}">${line}</line>`); continue }
+    if (line.startsWith("+")) { lines.push(`<line type="added" old_line="" new_line="${lineNew}">${line.slice(1)}</line>`); lineNew++ }
+    else if (line.startsWith("-")) { lines.push(`<line type="deleted" old_line="${lineOld}" new_line="">${line.slice(1)}</line>`); lineOld++ }
+    else if (line.startsWith(" ")) { lines.push(`<line type="context" old_line="${lineOld}" new_line="${lineNew}">${line.slice(1)}</line>`); lineOld++; lineNew++ }
+    else { lines.push(`<line type="context" old_line="${lineOld}" new_line="${lineNew}">${line}</line>`); lineOld++; lineNew++ }
+  }
+  return lines.join("\n")
+}
+
+export function formatCustomInstructions(instructions) {
+  if (!instructions.length) return ""
+  const items = instructions.map((ins) => {
+    const inc = ins.include_patterns.join(", ") || "all files"
+    const exc = ins.exclude_patterns.join(", ") || "none"
+    return `For files matching "${inc}" (excluding: ${exc}) - ${ins.name}:\n${ins.instructions.trim()}\n`
+  }).join("\n")
+  return `<custom_instructions>\nApply these additional review instructions to matching files:\n\n${items}\n</custom_instructions>`
+}
