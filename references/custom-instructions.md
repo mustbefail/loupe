@@ -28,10 +28,23 @@ instructions:
   the lens name (the key under `lenses` in `build-context.mjs`'s output,
   and the value a reviewer for this lens reports in the finding's `lens`
   field).
-- `fileFilters` — a list of glob patterns using Python-`fnmatch` semantics
-  (`*` does not cross a `/` on its own; `**` does; `?` matches one
-  character; `[...]` is a character class). An entry prefixed with `!`
-  is an **exclude** pattern instead of an include pattern.
+- `fileFilters` — a list of glob patterns using glob matching (see `fnmatch`
+  in `build-context.mjs`) — this is **not** Python's `fnmatch` module (that
+  module has no `**` special-casing); it is loupe's own matcher:
+  - A bare `*` compiles to `.*` and **does** cross a `/` on its own — e.g.
+    `*.rb` matches `app/models/user.rb`, not just files at the repo root.
+  - `**` immediately followed by `/` means "zero or more directory
+    segments" — e.g. `db/migrate/**/*.rb` matches both `db/migrate/x.rb`
+    (zero segments) and `db/migrate/a/b/x.rb` (two segments).
+  - `**` at the end of a pattern, or not immediately followed by `/`,
+    behaves the same as a bare `*` (matches any run of characters,
+    including `/`).
+  - `?` matches exactly one character; `[...]` is a character class,
+    including the negated form `[!...]`.
+
+  An entry prefixed with `!` is an **exclude** pattern instead of an
+  include pattern (the `!` itself is stripped before the glob is matched
+  — it is not part of the character-class syntax above).
 - `instructions` — a free-text block. It may bundle several distinct
   directives/rules under one group — nothing requires it to be a single
   rule.
@@ -77,8 +90,11 @@ subject to two independent custom rule-sets at once is expected, not a bug.
 
 Each custom-lens reviewer subagent receives exactly one group's
 `instructions` text and exactly that group's matched `files` slice (path +
-diff + original, per `output-format.md`'s `files` shape). Apply **only**
-this group's instructions to **only** these files:
+diff + original, per the `files: [{path, diff, original}]` shape emitted
+by `build-context.mjs`'s `buildLenses()` and shown in §2 above —
+`output-format.md` does not define this shape, only the finding contract
+reviewers must return). Apply **only** this group's instructions to
+**only** these files:
 
 - Do not apply another group's rules, even if you happen to know about them
   (you weren't given them for a reason — another subagent owns that lens).
@@ -123,7 +139,13 @@ absence of this prefix is how the final report (and a human reading it)
 tells a repo-specific rule finding apart from one of `loupe`'s built-in
 checks at a glance.
 
-This citation convention is ported from the `formatCustomInstructions`
-labeling convention used to surface custom instructions to the model in the
-original `duo-review-local.mjs` flow, adapted here to label individual
-findings rather than a shared instructions block.
+This citation format is loupe's own convention for labeling individual
+findings — it is not shared with, or ported from, `build-context.mjs`'s
+`formatCustomInstructions()`, which uses different wording (`For files
+matching "<patterns>" (excluding: <patterns>) - <name>:`) to introduce a
+group's instructions block to the reviewer model in the first place. That
+function's output is what a reviewer *reads* to learn the rules; the
+`According to custom instructions in '<name>' (<paraphrase>): <comment>`
+format above is what a reviewer *writes* back, per finding, and the two
+are independent conventions that happen to both reference the group's
+`name`.
