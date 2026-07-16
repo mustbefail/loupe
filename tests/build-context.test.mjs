@@ -37,6 +37,8 @@ test("fnmatch matches Python semantics (star crosses slash)", () => {
   assert.equal(fnmatch("app/models/user.rb", "**/*.rb"), true)
   assert.equal(fnmatch("spec/models/user_spec.rb", "spec/**/*"), true)
   assert.equal(fnmatch("app/user.rb", "*.py"), false)
+  assert.equal(fnmatch("user.rb", "**/*.rb"), true)   // leading ** matches a root-level file (zero directories)
+  assert.equal(fnmatch("user.py", "**/*.rb"), false)  // wrong extension must not match
 })
 
 test("matchesInstruction honors include and exclude", () => {
