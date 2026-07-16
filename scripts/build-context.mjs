@@ -34,8 +34,11 @@ export function parseDiff(raw) {
 
 export function parseGeneratedAttrs(out) {
   const set = new Set()
+  // Standard git attributes for marking generated files: linguist-generated (GitHub/Linguist)
+  // and gitlab-generated (GitLab). Both are forge-agnostic conventions; we use them to exclude
+  // auto-generated files from review (not a product dependency).
   for (const line of (out ?? "").split("\n")) {
-    const m = line.match(/^(.*): linguist-generated: (set|true)$/)
+    const m = line.match(/^(.*): (?:gitlab-generated|linguist-generated): (set|true)$/)
     if (m) set.add(m[1])
   }
   return set
@@ -257,7 +260,7 @@ function main() {
   const allDiffs = parseDiff(git("diff", "-M", `${mergeBase}..HEAD`))
   const paths = allDiffs.map((f) => f.path).filter(Boolean)
   const generated = paths.length
-    ? parseGeneratedAttrs(gitTry("check-attr", "linguist-generated", "--", ...paths) ?? "")
+    ? parseGeneratedAttrs(gitTry("check-attr", "gitlab-generated", "linguist-generated", "--", ...paths) ?? "")
     : new Set()
   const reviewable = allDiffs.filter((f) => f.diff.trim() && !generated.has(f.path))
   if (!reviewable.length) { console.log(JSON.stringify({ base, mergeBase, changedFiles: [], renamed: {}, generated: [...generated], lenses: {} })); return }

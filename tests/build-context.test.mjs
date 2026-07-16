@@ -50,8 +50,8 @@ test("matchesInstruction honors include and exclude", () => {
 })
 
 test("parseGeneratedAttrs collects set/true paths", () => {
-  const out = "a.rb: linguist-generated: set\nb.rb: linguist-generated: true\nc.rb: linguist-generated: unset"
+  const out = "a.rb: linguist-generated: set\nb.rb: linguist-generated: true\nc.rb: gitlab-generated: set\nd.rb: linguist-generated: unset"
   const set = parseGeneratedAttrs(out)
-  assert.ok(set.has("a.rb") && set.has("b.rb"))
-  assert.equal(set.has("c.rb"), false)
+  assert.ok(set.has("a.rb") && set.has("b.rb") && set.has("c.rb"))
+  assert.equal(set.has("d.rb"), false)
 })
