@@ -77,3 +77,53 @@ export function matchesInstruction(path, ins) {
   const exc = ins.exclude_patterns.some((p) => fnmatch(path, p))
   return inc && !exc
 }
+
+function unquote(s) {
+  const m = s.match(/^"(.*)"$/) || s.match(/^'(.*)'$/)
+  return m ? m[1] : s.trim()
+}
+
+// Targeted parser for .gitlab/duo/mr-review-instructions.yaml: a top-level
+// `instructions:` sequence of mappings, each with `name`, `fileFilters` (sequence)
+// and `instructions` (block literal `|`). Not a general YAML parser.
+export function parseInstructionsYaml(text) {
+  const items = []
+  let cur = null, mode = null, blockIndent = null
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/\r$/, "")
+    if (mode === "instructions") {
+      if (line.trim() === "") { cur.instructions += "\n"; continue }
+      const indent = line.length - line.trimStart().length
+      if (blockIndent === null) blockIndent = indent
+      if (indent >= blockIndent) { cur.instructions += line.slice(blockIndent) + "\n"; continue }
+      mode = null; blockIndent = null // dedent ends the block; reprocess this line below
+    }
+    const stripped = line.trim()
+    if (stripped === "" || stripped.startsWith("#") || stripped === "---") continue
+    const nameM = line.match(/^\s*-\s+name:\s*(.+?)\s*$/)
+    if (nameM) { cur = { name: unquote(nameM[1]), fileFilters: [], instructions: "" }; items.push(cur); mode = null; continue }
+    if (!cur) continue
+    if (/^\s*fileFilters:\s*$/.test(line)) { mode = "fileFilters"; continue }
+    if (/^\s*instructions:\s*\|\s*$/.test(line)) { mode = "instructions"; blockIndent = null; continue }
+    const inlineInstr = line.match(/^\s*instructions:\s*(.+?)\s*$/)
+    if (inlineInstr) { cur.instructions = unquote(inlineInstr[1]); mode = null; continue }
+    if (mode === "fileFilters") {
+      const fM = line.match(/^\s*-\s*(.+?)\s*$/)
+      if (fM) cur.fileFilters.push(unquote(fM[1]))
+    }
+  }
+  return items.filter((i) => i.name && i.instructions.trim() && i.fileFilters.length)
+}
+
+export function loadCustomInstructions(repo, deps = { readFileSync, existsSync }) {
+  const file = join(repo, ".gitlab/duo/mr-review-instructions.yaml")
+  if (!deps.existsSync(file)) return []
+  let parsed
+  try { parsed = parseInstructionsYaml(deps.readFileSync(file, "utf8")) } catch { return [] }
+  return parsed.map((i) => ({
+    name: i.name,
+    instructions: i.instructions,
+    include_patterns: i.fileFilters.filter((f) => !f.startsWith("!")),
+    exclude_patterns: i.fileFilters.filter((f) => f.startsWith("!")).map((f) => f.slice(1)),
+  }))
+}
