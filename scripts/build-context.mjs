@@ -198,3 +198,82 @@ export function formatCustomInstructions(instructions) {
   }).join("\n")
   return `<custom_instructions>\nApply these additional review instructions to matching files:\n\n${items}\n</custom_instructions>`
 }
+
+const BASE_LENSES = ["correctness", "security", "performance"]
+
+export function buildLenses(reviewable, filesContent, customInstructions) {
+  const withOriginal = (f) => ({
+    path: f.path,
+    diff: f.diff,
+    original: f.oldPath && !f.newFile ? (filesContent[f.oldPath] ?? null) : null,
+  })
+  const lenses = {}
+  for (const ins of customInstructions) {
+    const matched = reviewable.filter((f) => matchesInstruction(f.path, ins))
+    if (!matched.length) continue
+    lenses[ins.name] = {
+      type: "custom",
+      instructions: ins.instructions.trim(),
+      include_patterns: ins.include_patterns,
+      exclude_patterns: ins.exclude_patterns,
+      files: matched.map(withOriginal),
+    }
+  }
+  for (const name of BASE_LENSES) {
+    lenses[name] = {
+      type: "base",
+      instructions: `Apply the built-in "${name}" review lens (see references/review-lenses.md).`,
+      files: reviewable.map(withOriginal),
+    }
+  }
+  return lenses
+}
+
+function main() {
+  const argv = process.argv.slice(2)
+  const flag = (n) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : undefined }
+  const repo = flag("repo") ?? process.cwd()
+  const git = (...a) => execFileSync("git", a, { cwd: repo, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 })
+  const gitTry = (...a) => { try { return git(...a) } catch { return null } }
+
+  if (gitTry("rev-parse", "--is-inside-work-tree") == null) {
+    console.error(`loupe: ${repo} is not a git repository`); process.exit(1)
+  }
+  let base = flag("base")
+  if (!base) {
+    const head = gitTry("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    base = head ? head.trim().replace("refs/remotes/origin/", "")
+      : (gitTry("rev-parse", "--verify", "main") ? "main" : "master")
+  }
+  const mergeBase = git("merge-base", base, "HEAD").trim()
+  const allDiffs = parseDiff(git("diff", "-M", `${mergeBase}..HEAD`))
+  const paths = allDiffs.map((f) => f.path).filter(Boolean)
+  const generated = paths.length
+    ? parseGeneratedAttrs(gitTry("check-attr", "gitlab-generated", "linguist-generated", "--", ...paths) ?? "")
+    : new Set()
+  const reviewable = allDiffs.filter((f) => f.diff.trim() && !generated.has(f.path))
+  if (!reviewable.length) { console.log(JSON.stringify({ base, mergeBase, changedFiles: [], renamed: {}, generated: [...generated], lenses: {} })); return }
+
+  const filesContent = {}
+  for (const f of reviewable) {
+    if (!f.oldPath || f.newFile) continue
+    const content = gitTry("show", `${mergeBase}:${f.oldPath}`)
+    if (content == null || content.split("\n").length > 10000) continue
+    filesContent[f.oldPath] = content
+  }
+  const renamed = Object.fromEntries(allDiffs.filter((f) => f.renamed).map((f) => [f.newPath, f.oldPath]))
+  const custom = loadCustomInstructions(repo).filter((ins) => reviewable.some((f) => matchesInstruction(f.path, ins)))
+
+  // Pre-format the diff for each lens file so subagents receive the tagged form.
+  const lenses = buildLenses(reviewable, filesContent, custom)
+  for (const lens of Object.values(lenses)) {
+    for (const f of lens.files) f.diff = formatDiffLines(f.diff)
+  }
+  console.log(JSON.stringify({
+    base, mergeBase,
+    changedFiles: reviewable.map((f) => f.path),
+    renamed, generated: [...generated], lenses,
+  }))
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) main()
