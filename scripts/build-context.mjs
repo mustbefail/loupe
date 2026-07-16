@@ -83,35 +83,72 @@ function unquote(s) {
   return m ? m[1] : s.trim()
 }
 
+// Strips a trailing inline `# comment` from a scalar value: the `#` only starts
+// a comment when it is preceded by whitespace and sits outside any quoted span.
+// A `#` with no leading space, or one inside quotes, is left as literal text.
+function stripInlineComment(s) {
+  let inSingle = false, inDouble = false
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]
+    if (c === "'" && !inDouble) inSingle = !inSingle
+    else if (c === '"' && !inSingle) inDouble = !inDouble
+    else if (c === "#" && !inSingle && !inDouble && i > 0 && /\s/.test(s[i - 1])) return s.slice(0, i)
+  }
+  return s
+}
+
+// Cleans a raw captured scalar: strip an inline comment, then unquote.
+function clean(s) {
+  return unquote(stripInlineComment(s).trim())
+}
+
 // Targeted parser for .gitlab/duo/mr-review-instructions.yaml: a top-level
 // `instructions:` sequence of mappings, each with `name`, `fileFilters` (sequence)
 // and `instructions` (block literal `|`). Not a general YAML parser.
 export function parseInstructionsYaml(text) {
   const items = []
-  let cur = null, mode = null, blockIndent = null
+  let cur = null, mode = null, keyIndent = null, blockLines = null
+
+  // The block ends when a non-blank line is indented at or below the
+  // `instructions:` key itself, so a later line indented less than the
+  // block's first content line (but still more than the key) is not lost.
+  function flushBlock() {
+    if (!cur || blockLines === null) return
+    let minIndent = null
+    for (const l of blockLines) {
+      if (l.trim() === "") continue
+      const indent = l.length - l.trimStart().length
+      if (minIndent === null || indent < minIndent) minIndent = indent
+    }
+    if (minIndent === null) minIndent = 0
+    cur.instructions = blockLines.map((l) => (l.trim() === "" ? "" : l.slice(minIndent))).join("\n") + "\n"
+    blockLines = null
+  }
+
   for (const raw of text.split("\n")) {
     const line = raw.replace(/\r$/, "")
     if (mode === "instructions") {
-      if (line.trim() === "") { cur.instructions += "\n"; continue }
+      if (line.trim() === "") { blockLines.push(""); continue }
       const indent = line.length - line.trimStart().length
-      if (blockIndent === null) blockIndent = indent
-      if (indent >= blockIndent) { cur.instructions += line.slice(blockIndent) + "\n"; continue }
-      mode = null; blockIndent = null // dedent ends the block; reprocess this line below
+      if (indent > keyIndent) { blockLines.push(line); continue }
+      flushBlock(); mode = null; keyIndent = null // block ends; reprocess this line below
     }
     const stripped = line.trim()
     if (stripped === "" || stripped.startsWith("#") || stripped === "---") continue
     const nameM = line.match(/^\s*-\s+name:\s*(.+?)\s*$/)
-    if (nameM) { cur = { name: unquote(nameM[1]), fileFilters: [], instructions: "" }; items.push(cur); mode = null; continue }
+    if (nameM) { cur = { name: clean(nameM[1]), fileFilters: [], instructions: "" }; items.push(cur); mode = null; continue }
     if (!cur) continue
     if (/^\s*fileFilters:\s*$/.test(line)) { mode = "fileFilters"; continue }
-    if (/^\s*instructions:\s*\|\s*$/.test(line)) { mode = "instructions"; blockIndent = null; continue }
+    const blockM = line.match(/^(\s*)instructions:\s*\|\s*$/)
+    if (blockM) { mode = "instructions"; keyIndent = blockM[1].length; blockLines = []; continue }
     const inlineInstr = line.match(/^\s*instructions:\s*(.+?)\s*$/)
-    if (inlineInstr) { cur.instructions = unquote(inlineInstr[1]); mode = null; continue }
+    if (inlineInstr) { cur.instructions = clean(inlineInstr[1]); mode = null; continue }
     if (mode === "fileFilters") {
       const fM = line.match(/^\s*-\s*(.+?)\s*$/)
-      if (fM) cur.fileFilters.push(unquote(fM[1]))
+      if (fM) cur.fileFilters.push(clean(fM[1]))
     }
   }
+  flushBlock()
   return items.filter((i) => i.name && i.instructions.trim() && i.fileFilters.length)
 }
 

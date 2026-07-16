@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { parseInstructionsYaml } from "../scripts/build-context.mjs"
+import { parseInstructionsYaml, loadCustomInstructions } from "../scripts/build-context.mjs"
 
 const YAML = `---
 # comment line
@@ -34,4 +34,59 @@ test("parseInstructionsYaml parses names, filters and block scalars", () => {
 test("parseInstructionsYaml drops incomplete items", () => {
   const items = parseInstructionsYaml("instructions:\n  - name: Only Name\n")
   assert.equal(items.length, 0)
+})
+
+const COMMENT_YAML = `instructions:
+  - name: General Standards # top-level
+    fileFilters:
+      - "**/*.rb" # ruby only
+    instructions: Quick check. # note
+`
+
+test("parseInstructionsYaml strips inline # comments from name, fileFilters entry, and inline instructions", () => {
+  const items = parseInstructionsYaml(COMMENT_YAML)
+  assert.equal(items.length, 1)
+  assert.equal(items[0].name, "General Standards")
+  assert.deepEqual(items[0].fileFilters, ["**/*.rb"])
+  assert.equal(items[0].instructions, "Quick check.")
+})
+
+const UNEVEN_INDENT_YAML = `instructions:
+  - name: Uneven Block
+    fileFilters:
+      - "**/*"
+    instructions: |
+        - deeper first bullet
+      - shallower second bullet
+`
+
+test("parseInstructionsYaml keeps both lines of an unevenly indented block scalar in a single item", () => {
+  const items = parseInstructionsYaml(UNEVEN_INDENT_YAML)
+  assert.equal(items.length, 1)
+  assert.ok(items[0].instructions.includes("deeper first bullet"))
+  assert.ok(items[0].instructions.includes("shallower second bullet"))
+})
+
+test("loadCustomInstructions returns [] when the instructions file does not exist", () => {
+  const deps = { existsSync: () => false, readFileSync: () => { throw new Error("should not be called") } }
+  const result = loadCustomInstructions("/repo", deps)
+  assert.deepEqual(result, [])
+})
+
+test("loadCustomInstructions splits include/exclude patterns and strips the ! prefix", () => {
+  const yaml = `instructions:
+  - name: Ruby Quality
+    fileFilters:
+      - "**/*.rb"
+      - "!spec/**/*"
+    instructions: |
+      Check for N+1 queries.
+`
+  const deps = { existsSync: () => true, readFileSync: () => yaml }
+  const result = loadCustomInstructions("/repo", deps)
+  assert.equal(result.length, 1)
+  assert.equal(result[0].name, "Ruby Quality")
+  assert.ok(result[0].instructions.includes("Check for N+1 queries."))
+  assert.deepEqual(result[0].include_patterns, ["**/*.rb"])
+  assert.deepEqual(result[0].exclude_patterns, ["spec/**/*"])
 })
