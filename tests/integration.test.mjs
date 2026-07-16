@@ -34,11 +34,22 @@ test("CLI emits JSON with lenses for a real diff", () => {
     writeFileSync(join(repo, "a.rb"), "puts 1\n"); g("add", "."); g("commit", "-qm", "base")
     const initBranch = g("branch", "--show-current").trim()
     g("checkout", "-qb", "feature")
-    writeFileSync(join(repo, "a.rb"), "puts 2\n"); g("commit", "-qam", "change")
+    writeFileSync(join(repo, "REVIEW.yaml"), [
+      "instructions:",
+      "  - name: Ruby Quality",
+      "    fileFilters:",
+      '      - "**/*.rb"',
+      "    instructions: |",
+      "      Check for N+1 queries.",
+      "",
+    ].join("\n"))
+    writeFileSync(join(repo, "a.rb"), "puts 2\n"); g("add", "."); g("commit", "-qam", "change")
     const out = execFileSync("node", [SCRIPT, "--base", initBranch, "--repo", repo], { encoding: "utf8" })
     const data = JSON.parse(out)
     assert.ok(data.changedFiles.includes("a.rb"))
     assert.ok(data.lenses.correctness.files.some((f) => f.path === "a.rb"))
+    assert.ok(data.lenses["Ruby Quality"])
+    assert.ok(data.lenses["Ruby Quality"].files.some((f) => f.path === "a.rb"))
   } finally {
     rmSync(repo, { recursive: true, force: true })
   }

@@ -1,6 +1,6 @@
 ---
 name: loupe
-description: Headless iterative code review — an ensemble of per-lens reviewer subagents plus a judge, looping review→fix→review until convergence. Use when asked to review the current branch against its base with GitLab-Duo-style custom instructions.
+description: Headless iterative code review — an ensemble of per-lens reviewer subagents plus a judge, looping review→fix→review until convergence. Use when asked to review the current branch against its base with YAML review rules (REVIEW.yaml).
 ---
 
 # loupe
@@ -26,8 +26,7 @@ stay consistent with, three other files in this skill:
   Treat it as load-bearing law, not a suggestion.
 - `references/review-lenses.md` and `references/custom-instructions.md` —
   what each base lens checks for, and how custom lenses from the reviewed
-  repo's own `.gitlab/duo/mr-review-instructions.yaml` are matched and
-  cited.
+  repo's own `REVIEW.yaml` are matched and cited.
 
 ## Arguments
 
@@ -39,7 +38,6 @@ Parsed from the skill invocation's argument string. All are optional.
 | `--max-iterations <n>` | `3` | Hard cap on the number of review→fix passes. |
 | `--fix` / `--no-fix` | `--fix` | Whether Step 7 dispatches the executor. Under `--no-fix`, actionable findings are never attempted and still surface in the final report's Deferred section as "attempted, unresolved" (per `output-format.md` §5 — that phrase covers both "attempted and failed" and "never attempted"). |
 | `--severity-gate <level>` | `high` | The minimum severity a `blocker`/`high` finding must clear to become actionable (see "Severity ranks" under Step 5). Accepts `blocker`\|`high`\|`medium`\|`low`, but per `output-format.md` §4, `medium` and `low` findings are **never** actionable no matter what the gate says — setting the gate to `medium` or `low` has the same practical effect as `high`. |
-| `--aigw <path>` | none | Optional: a local checkout of `gitlab-ai-gateway`. When given, before Step 3 read that checkout for its current Duo review prompts and fold anything relevant in as **extra, this-run-only context** appended to the affected lens's `instructions` when dispatching that lens's reviewer. This never edits `references/*.md` on disk — the refresh is ephemeral, scoped to the current run's subagent prompts only. If the path doesn't exist or contains nothing recognizable as review prompts, log a one-line warning and continue with the built-in `references/review-lenses.md` unmodified — never fail the run over this flag. |
 
 ## Safety rules (non-negotiable)
 
@@ -128,10 +126,10 @@ lenses }`.
   exclude_patterns?, files: [{ path, diff, original }] }`. Proceed to
   Step 3 with this object.
 
-**Known upstream quirk** (inherited from `build-context.mjs`, not
-something to work around here): if the reviewed repo's own
-`mr-review-instructions.yaml` names a custom group exactly `correctness`,
-`security`, or `performance`, `buildLenses()` assigns base lenses to the
+**Known quirk** (a property of `build-context.mjs` itself, not something to
+work around here): if the reviewed repo's own `REVIEW.yaml` names a custom
+group exactly `correctness`, `security`, or `performance`, `buildLenses()`
+assigns base lenses to the
 `lenses` object *after* custom ones, so the base lens silently overwrites
 that custom entry under the same key. In practice this means a lens key of
 `security` is always, unambiguously, the base security lens by the time
@@ -162,8 +160,7 @@ reason to serialize.
 Each reviewer's prompt must be self-contained and include:
 
 1. The lens name (the `lenses` key) and its `type`.
-2. The lens's `instructions` text verbatim (plus, if `--aigw` supplied
-   extra context for this lens, that text appended after it).
+2. The lens's `instructions` text verbatim.
 3. The full `files` array for this lens verbatim: `[{ path, diff,
    original }]`. `diff` is already in the tagged `<chunk_header>`/`<line
    type="added|deleted|context|nonewline" old_line=".." new_line="..">`

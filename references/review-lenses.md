@@ -2,7 +2,7 @@
 
 Three base lenses — `correctness`, `security`, `performance` — run on every
 `loupe` iteration, in addition to any custom lenses matched from
-`.gitlab/duo/mr-review-instructions.yaml` (see `custom-instructions.md`).
+`REVIEW.yaml` (see `custom-instructions.md`).
 Unlike custom lenses, base lenses are never file-filtered: the reviewer
 subagent for a base lens receives every reviewable changed file for the
 iteration (`type: "base"` in the lens object from `build-context.mjs`, with

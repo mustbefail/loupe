@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // build-context.mjs — deterministic review-context builder for the `loupe` skill.
-// Ports the context-building half of duo-review-local.mjs (diff parsing, generated-file
-// exclusion, custom-instruction matching, LLM-facing formatting) WITHOUT the Anthropic
-// API / prompt-rendering / prescan halves — those are handled by Claude subagents.
+// Parses `git diff base..HEAD`, excludes generated files, matches this repo's own
+// REVIEW.yaml custom rules to the changed files, and emits per-lens, LLM-facing
+// context (diff parsing, generated-file exclusion, custom-instruction matching,
+// tagged-diff formatting) — no API calls or prompt rendering here; those are
+// handled by Claude subagents.
 
 import { execFileSync } from "node:child_process"
 import { readFileSync, existsSync } from "node:fs"
@@ -33,7 +35,7 @@ export function parseDiff(raw) {
 export function parseGeneratedAttrs(out) {
   const set = new Set()
   for (const line of (out ?? "").split("\n")) {
-    const m = line.match(/^(.*): (?:gitlab-generated|linguist-generated): (set|true)$/)
+    const m = line.match(/^(.*): linguist-generated: (set|true)$/)
     if (m) set.add(m[1])
   }
   return set
@@ -102,9 +104,9 @@ function clean(s) {
   return unquote(stripInlineComment(s).trim())
 }
 
-// Targeted parser for .gitlab/duo/mr-review-instructions.yaml: a top-level
-// `instructions:` sequence of mappings, each with `name`, `fileFilters` (sequence)
-// and `instructions` (block literal `|`). Not a general YAML parser.
+// Targeted parser for REVIEW.yaml: a top-level `instructions:` sequence of
+// mappings, each with `name`, `fileFilters` (sequence) and `instructions`
+// (block literal `|`). Not a general YAML parser.
 export function parseInstructionsYaml(text) {
   const items = []
   let cur = null, mode = null, keyIndent = null, blockLines = null
@@ -153,7 +155,7 @@ export function parseInstructionsYaml(text) {
 }
 
 export function loadCustomInstructions(repo, deps = { readFileSync, existsSync }) {
-  const file = join(repo, ".gitlab/duo/mr-review-instructions.yaml")
+  const file = join(repo, "REVIEW.yaml")
   if (!deps.existsSync(file)) return []
   let parsed
   try { parsed = parseInstructionsYaml(deps.readFileSync(file, "utf8")) } catch { return [] }
@@ -255,7 +257,7 @@ function main() {
   const allDiffs = parseDiff(git("diff", "-M", `${mergeBase}..HEAD`))
   const paths = allDiffs.map((f) => f.path).filter(Boolean)
   const generated = paths.length
-    ? parseGeneratedAttrs(gitTry("check-attr", "gitlab-generated", "linguist-generated", "--", ...paths) ?? "")
+    ? parseGeneratedAttrs(gitTry("check-attr", "linguist-generated", "--", ...paths) ?? "")
     : new Set()
   const reviewable = allDiffs.filter((f) => f.diff.trim() && !generated.has(f.path))
   if (!reviewable.length) { console.log(JSON.stringify({ base, mergeBase, changedFiles: [], renamed: {}, generated: [...generated], lenses: {} })); return }

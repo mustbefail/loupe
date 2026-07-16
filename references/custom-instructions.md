@@ -2,15 +2,15 @@
 
 In addition to the three base lenses (`review-lenses.md`), `loupe` picks up
 custom review lenses from the **reviewed repository's own**
-`.gitlab/duo/mr-review-instructions.yaml` (this file lives in the project
-being reviewed, not in `loupe` itself). This document explains where those
-lenses come from, how a reviewer subagent should apply one, and the exact
-citation format a custom-lens finding must use.
+`REVIEW.yaml` (this file lives at the root of the project being reviewed,
+not in `loupe` itself). This document explains where those lenses come
+from, how a reviewer subagent should apply one, and the exact citation
+format a custom-lens finding must use.
 
 ## 1. Source format
 
-`.gitlab/duo/mr-review-instructions.yaml` holds a top-level `instructions:`
-sequence. Each item is a named group:
+`REVIEW.yaml` holds a top-level `instructions:` sequence. Each item is a
+named group:
 
 ```yaml
 instructions:
@@ -75,8 +75,8 @@ instructions:
    group — not the full changed set.
 4. If **no** changed file matches a group, no lens is created for it that
    iteration — the group is silently skipped, not reported as an error.
-5. If `.gitlab/duo/mr-review-instructions.yaml` doesn't exist, or fails to
-   parse, `loadCustomInstructions()` returns `[]`: no custom lenses run
+5. If `REVIEW.yaml` doesn't exist, or fails to parse,
+   `loadCustomInstructions()` returns `[]`: no custom lenses run
    that iteration, only the three base lenses do. This is not an error
    condition either.
 
