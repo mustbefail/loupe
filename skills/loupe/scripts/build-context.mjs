@@ -7,8 +7,9 @@
 // handled by Claude subagents.
 
 import { execFileSync } from "node:child_process"
-import { readFileSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, realpathSync } from "node:fs"
 import { join } from "node:path"
+import { pathToFileURL } from "node:url"
 
 export function parseDiff(raw) {
   const files = []
@@ -287,4 +288,7 @@ function main() {
   }))
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main()
+// Resolve process.argv[1] through symlinks (Node already resolves import.meta.url
+// through them) and compare as canonical file URLs, so `main()` still runs when the
+// script is invoked via a symlinked install path or a path with spaces / non-ASCII.
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) main()
