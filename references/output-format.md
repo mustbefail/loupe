@@ -142,13 +142,19 @@ findings — each already carrying the `key` the orchestrator attached in §2
   single aggregate `reason` field now lives, one entry per rejected
   finding. A `key` must never appear in both `actionable` and `rejected` —
   the two arrays are disjoint by construction.
-- The judge MUST place every `blocker`/`high` finding it was given into
-  either `actionable` or `rejected` — never leave one unclassified.
-  `medium`/`low` findings may be left out of both arrays; that omission is
-  exactly what makes them "Deferred" in the final report (§5). A judge may
-  still put a `medium`/`low` finding into `rejected` (e.g. an obvious
-  duplicate), just never into `actionable` (the severity gate keeps it
-  out regardless of the judge's opinion).
+- The judge is never required to force every finding into `actionable` or
+  `rejected`. A finding of any severity may be left out of both arrays;
+  that omission is exactly what makes it "Deferred" in the final report
+  (§5). This matters most for `blocker`/`high` findings that the currently
+  configured `--severity-gate` excludes from `actionable` — the gate
+  excluding a finding is not the judge rejecting it, so the judge MUST NOT
+  place a gate-excluded finding into `rejected` just to give it a bucket;
+  leaving it unclassified is correct and lands it in Deferred. `rejected`
+  is reserved for findings the judge affirmatively judges noise,
+  duplicate-in-substance, or out of scope, regardless of severity. A judge
+  may still put a `medium`/`low` finding into `rejected` (e.g. an obvious
+  duplicate), just never into `actionable` unless it both clears the gate
+  and isn't rejected.
 - `stop` — `true` if, from the judge's perspective, this pass turned up
   nothing that still warrants action (every fresh finding is either
   actionable-and-about-to-be-fixed or rejected, or the fresh set was
@@ -165,14 +171,15 @@ findings — each already carrying the `key` the orchestrator attached in §2
 
 ## 4. Severity → action mapping
 
-The judge's `actionable` set only ever contains `blocker`/`high` findings
-under the default gate. All four severities still flow into the final
-report:
+The judge's `actionable` set only ever contains findings that clear the
+currently configured `--severity-gate` (default: `blocker` and `high`)
+and that the judge did not reject. All four severities still flow into
+the final report:
 
 | Severity | Action |
 |---|---|
-| `blocker`, `high` | Actionable (if gate allows and the judge doesn't reject it) → dispatched to the executor to fix in the working tree this iteration. |
-| `medium` | Never auto-fixed. Rejected → report's Rejected section. Not rejected → attached to the report's Deferred section as a suggestion for a human to apply. |
+| `blocker`, `high` | Actionable if it clears the current `--severity-gate` and the judge doesn't reject it → dispatched to the executor to fix in the working tree this iteration. Excluded by the gate (e.g. a `high` finding under `--severity-gate blocker`) and not rejected → report's Deferred section — gate exclusion is not a rejection. Rejected by the judge → report's Rejected section, regardless of whether the gate would otherwise have allowed it. |
+| `medium` | Never auto-fixed. Rejected → report's Rejected section. Not rejected → report's Deferred section as a suggestion for a human to apply. |
 | `low` | Report-only, never auto-fixed. Rejected → report's Rejected section. Not rejected → report's Deferred section, informational (no suggestion applied). |
 
 Any severity, including `blocker`/`high`, can be marked `rejected` by the
@@ -184,27 +191,42 @@ Rejected section (§5), not Fixed.
 
 Printed once, at the end of the loop (whichever stop condition fired), never
 before. Three sections plus a diff pointer. The sections are built from the
-merged, deduped findings across all iterations (§2) and are disjoint —
-every finding lands in exactly one of them, by this tie-breaker:
+merged, deduped findings across all iterations (§2) and are disjoint AND
+total — every finding lands in exactly one of them — by this priority
+order (first match wins):
 
 1. **Rejected** — the finding's `key` appears in some iteration's
    `rejected` array (§3): the judge affirmatively marked it as noise,
    duplicate-in-substance, or out of scope. This applies **regardless of
-   severity** and takes priority over the other two buckets.
+   severity** and takes priority over the other two buckets. The reported
+   reason comes from that finding's `rejected[].reason`.
 2. **Fixed** — not Rejected, and the finding's `key` appeared in some
-   iteration's `actionable` array (§3 — `blocker`/`high` only, by the
-   severity gate) and was confirmed applied by the executor.
-3. **Deferred** — not Rejected, not Fixed: every remaining `medium`/`low`
-   finding that the judge left out of both `actionable` (impossible for it
-   to be in there — the gate excludes `medium`/`low`) and `rejected`.
+   iteration's `actionable` array (§3 — findings that cleared the
+   *currently configured* `--severity-gate` and were not rejected) and its
+   fix was applied and confirmed by the executor this run.
+3. **Deferred** — everything else. This is the catch-all: findings of any
+   severity (including `blocker`/`high`) that the current `--severity-gate`
+   excludes from `actionable`; `medium`/`low` findings the judge did not
+   reject; and any finding that was `actionable` but whose fix attempt
+   failed, or was never attempted before the loop stopped — reported here
+   as "attempted, unresolved" rather than silently dropped.
 
-Because `actionable` and `rejected` are disjoint by construction (§3), and
-Deferred is restricted to severities the gate already excludes from
-`actionable`, no finding can qualify for more than one bucket. (An
-actionable finding whose fix attempt fails rather than applies is not yet
-"Fixed" — the orchestrator's retry/re-surfacing behavior for that case is
-`SKILL.md`'s concern, not this contract's; such a finding does not appear
-in this report until it resolves to one of the three buckets above.)
+Rejected and Fixed are each pinned to a specific, checkable condition
+(membership in `rejected[]`; membership in `actionable` plus a confirmed
+applied fix), and Deferred is defined as everything that matches neither —
+so the three buckets are disjoint by construction (a finding matching rule
+1 or 2 is by definition excluded from rule 3's "everything else"), and
+total by construction (rule 3 has no membership test to fail, so every
+finding that isn't Rejected or Fixed necessarily lands there). No rule
+forces a gate-excluded finding into Rejected — gate exclusion is not a
+judge decision, so a `high` finding excluded under `--severity-gate
+blocker` lands in Deferred, never Rejected, unless the judge separately
+and affirmatively rejected it.
+
+Whether the orchestrator's loop is allowed to stop while an `actionable`
+finding is still unresolved (fix attempted and failed, or not yet
+attempted) is `SKILL.md`'s call, not this contract's — this bucket only
+defines where such a finding is reported if that happens.
 
 ```markdown
 ## loupe review report
@@ -215,6 +237,8 @@ in this report until it resolves to one of the three buckets above.)
 ### Deferred (N)
 - `app/order.rb:17` [medium/n-plus-one] <comment>
   Suggestion: replace `from` with `to`.
+- `app/session.rb:9` [high/missing-null-check] <comment> — excluded by `--severity-gate blocker`.
+- `app/cache.rb:23` [blocker/race-condition] <comment> — attempted, unresolved.
 
 ### Rejected (N)
 - `app/util.rb:8` [low/naming] <comment> — judge: <rejected[].reason for this key>
@@ -225,13 +249,23 @@ Run `git diff --stat` (or `git diff`) in the working tree to see everything
 commit the changes yourself.
 ```
 
-- **Fixed** — findings that were `actionable`, dispatched to the executor,
-  and confirmed applied. Bullet text is the finding's own `comment` (§1).
-- **Deferred** — `medium`-severity findings not rejected (their `suggestion`,
-  if any, is rendered as the `Suggestion:` line — omit that line entirely if
-  the finding carries no `suggestion`) and any not-rejected `low`-severity
-  findings still worth a human's attention (report-only, never a
-  `Suggestion:` line even if one happens to be present).
+- **Fixed** — findings that were `actionable` under the gate in force when
+  they were judged, dispatched to the executor, and confirmed applied.
+  Bullet text is the finding's own `comment` (§1).
+- **Deferred** — the catch-all bucket (§5 rule 3): everything not Rejected
+  and not Fixed. In practice this covers three cases: (1) findings of any
+  severity — including `blocker`/`high` — excluded from `actionable` by
+  the current `--severity-gate`; (2) `medium`/`low` findings the judge did
+  not reject; (3) findings that were `actionable` but never got a
+  confirmed fix before the loop stopped, rendered with a trailing
+  " — attempted, unresolved" instead of a `Suggestion:` line. For cases
+  (1) and (2), render a `suggestion` if the finding carries one as the
+  `Suggestion:` line (omit the line entirely when there is none); a
+  `low`-severity finding never gets a `Suggestion:` line even if one is
+  present, since it's report-only. Whether the loop may stop while an
+  `actionable` finding is still unresolved is governed by `SKILL.md`
+  (Task 7) — this bucket is only where such a finding is reported if it
+  occurs.
 - **Rejected** — findings whose `key` is in some iteration's `rejected`
   array (§3), regardless of severity. The `judge: ...` text is that
   specific finding's `rejected[].reason` — not a single reason shared
