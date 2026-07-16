@@ -232,7 +232,7 @@ node -e '
     f.key = crypto.createHash("sha1").update(f.file + ":" + f.new_line + ":" + f.category).digest("hex");
   }
   fs.writeFileSync(path, JSON.stringify(findings));
-' <scratchpad>/loupe/<repo>/fresh-findings.json
+' <scratchpad>/loupe/<abs-repo-path-with-/-replaced-by-->/fresh-findings.json
 ```
 Read the file back — every finding now carries `key`.
 
@@ -316,9 +316,9 @@ judgeStop   = the judge's `stop` field this iteration (or the synthesized
               `stop: true` from Step 4 if no judge ran because the fresh
               set was empty)
 noProgress  = (this iteration's `actionable` was empty)
-              AND (no entry in state.findings has fixedInIteration === N-1)
-              — for N = 0 there is no iteration -1, so that second clause
-              is vacuously true: an empty first pass stops right there.
+              AND (no entry in state.findings has fixedInIteration === N)
+              — the iteration that just completed found nothing new actionable
+              AND fixed nothing in that same iteration.
 atCap       = (N + 1) >= max-iterations
               — with the default of 3, iterations 0, 1, 2 run and a 4th
               never starts.
@@ -403,7 +403,8 @@ rule (first match wins):
    - `status === "unresolved"` → suffix `— attempted, unresolved`, no
      `Suggestion:` line.
    - `status === "deferred"`, severity `blocker`/`high` (gate-excluded) →
-     suffix `` — excluded by `--severity-gate <value>` ``.
+     suffix `` — excluded by `--severity-gate <value>` ``; render a
+     `Suggestion:` line if the finding carries one.
    - `status === "deferred"`, severity `medium` → render a `Suggestion:`
      line if the finding carries one; omit the line if it doesn't.
    - `status === "deferred"`, severity `low` → informational only, never
