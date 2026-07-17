@@ -258,13 +258,26 @@ function main() {
       : (gitTry("rev-parse", "--verify", "main") ? "main" : "master")
   }
   const mergeBase = git("merge-base", base, "HEAD").trim()
-  const allDiffs = parseDiff(git("diff", "-M", `${mergeBase}..HEAD`))
+  // Default: diff mergeBase against the WORKING TREE (committed + uncommitted tracked
+  // changes) so work-in-progress is reviewed and the fix loop sees its own edits on the
+  // next re-diff. `--committed` restores the commit-range diff (mergeBase..HEAD) for a
+  // PR/MR-style gate on only what has been committed.
+  const committed = argv.includes("--committed")
+  // In working-tree mode, briefly mark untracked (new, unignored) files intent-to-add so
+  // they appear in the diff as new files, then unstage them — the index is left as found.
+  let intentToAdd = []
+  if (!committed) {
+    const untracked = (gitTry("ls-files", "--others", "--exclude-standard") ?? "").split("\n").filter(Boolean)
+    if (untracked.length) { git("add", "-N", "--", ...untracked); intentToAdd = untracked }
+  }
+  const allDiffs = parseDiff(git("diff", "-M", committed ? `${mergeBase}..HEAD` : mergeBase))
+  if (intentToAdd.length) gitTry("reset", "-q", "HEAD", "--", ...intentToAdd)
   const paths = allDiffs.map((f) => f.path).filter(Boolean)
   const generated = paths.length
     ? parseGeneratedAttrs(gitTry("check-attr", "gitlab-generated", "linguist-generated", "--", ...paths) ?? "")
     : new Set()
   const reviewable = allDiffs.filter((f) => f.diff.trim() && !generated.has(f.path))
-  if (!reviewable.length) { console.log(JSON.stringify({ base, mergeBase, changedFiles: [], renamed: {}, generated: [...generated], lenses: {} })); return }
+  if (!reviewable.length) { console.log(JSON.stringify({ base, mergeBase, mode: committed ? "committed" : "working-tree", changedFiles: [], renamed: {}, generated: [...generated], lenses: {} })); return }
 
   const filesContent = {}
   for (const f of reviewable) {
@@ -282,7 +295,7 @@ function main() {
     for (const f of lens.files) f.diff = formatDiffLines(f.diff)
   }
   console.log(JSON.stringify({
-    base, mergeBase,
+    base, mergeBase, mode: committed ? "committed" : "working-tree",
     changedFiles: reviewable.map((f) => f.path),
     renamed, generated: [...generated], lenses,
   }))

@@ -21,10 +21,14 @@ Add the marketplace, then install the plugin:
 
 Once installed, invoke it from inside any git repository — either ask Claude
 to run a loupe review of the current branch, or call the `loupe` skill
-directly. All arguments are optional:
+directly. By default it reviews everything on your branch that isn't in the
+base yet — **including uncommitted work** (tracked edits and new untracked
+files) — so you can review changes before committing them, and each fix pass
+sees its own edits on the next re-diff. All arguments are optional:
 
 ```
 --base <ref>            # ref to diff against (default: repo's default branch)
+--committed             # review only committed changes (mergeBase..HEAD); default also includes the working tree
 --max-iterations <n>    # hard cap on review→fix passes (default: 3)
 --fix | --no-fix        # whether to auto-fix actionable findings (default: --fix)
 --severity-gate <level> # min severity to auto-fix: blocker|high|medium|low (default: high)

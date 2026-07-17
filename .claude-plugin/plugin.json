@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "loupe",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Headless iterative code review — an ensemble of per-lens reviewer subagents plus a judge, looping review→fix→review until convergence.",
   "author": {
     "name": "Viktor Kushnir"

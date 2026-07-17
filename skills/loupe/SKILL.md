@@ -38,6 +38,7 @@ Parsed from the skill invocation's argument string. All are optional.
 | `--max-iterations <n>` | `3` | Hard cap on the number of review→fix passes. |
 | `--fix` / `--no-fix` | `--fix` | Whether Step 7 dispatches the executor. Under `--no-fix`, actionable findings are never attempted and still surface in the final report's Deferred section as "attempted, unresolved" (per `output-format.md` §5 — that phrase covers both "attempted and failed" and "never attempted"). |
 | `--severity-gate <level>` | `high` | The minimum severity a `blocker`/`high` finding must clear to become actionable (see "Severity ranks" under Step 5). Accepts `blocker`\|`high`\|`medium`\|`low`, but per `output-format.md` §4, `medium` and `low` findings are **never** actionable no matter what the gate says — setting the gate to `medium` or `low` has the same practical effect as `high`. |
+| `--committed` | off (review the working tree) | What to diff against `--base`. By default `loupe` reviews the **working tree** — every change not yet in the base, whether committed on the branch or still uncommitted (tracked edits and new untracked files) — so work-in-progress is reviewed and each pass's re-diff sees the edits Step 7 just made. Pass `--committed` to diff the commit range (`mergeBase..HEAD`) instead, reviewing only what has been committed (a PR/MR-style gate). Passed through to `build-context.mjs --committed`. |
 
 ## Safety rules (non-negotiable)
 
@@ -97,7 +98,7 @@ Parsed from the skill invocation's argument string. All are optional.
 
 Run:
 ```
-node "${CLAUDE_SKILL_DIR}/scripts/build-context.mjs" [--base <base>]
+node "${CLAUDE_SKILL_DIR}/scripts/build-context.mjs" [--base <base>] [--committed]
 ```
 from inside the reviewed repo (the script defaults `--repo` to
 `process.cwd()`, which is the reviewed repo since that's where this skill
@@ -115,8 +116,18 @@ returns in its JSON and reuse that **exact** value verbatim as `--base` on
 every later iteration's invocation, so the target can't silently drift
 mid-run if the remote's default-branch pointer changes.
 
-Parse stdout as JSON: `{ base, mergeBase, changedFiles, renamed, generated,
-lenses }`.
+Pass `--committed` through to `build-context.mjs` when the user supplied it
+via the skill's own `--committed` argument; otherwise omit it and let the
+script default to reviewing the working tree. Under `--committed` the diff is
+the commit range `mergeBase..HEAD`, so a fix Step 7 writes to the working
+tree is **not** visible on the next iteration's re-diff — in that mode the
+loop is effectively a single pass (fixes are left for the human to review and
+commit). In the default working-tree mode, Step 7's fixes *do* show up on the
+re-diff, which is what makes the loop genuinely iterative.
+
+Parse stdout as JSON: `{ base, mergeBase, mode, changedFiles, renamed,
+generated, lenses }`. `mode` is `"working-tree"` (default) or `"committed"`
+(under `--committed`) — it records what was diffed.
 
 - If `changedFiles` is empty: print `loupe: nothing to review (no
   reviewable changes between <base> and HEAD)` and stop — skip straight
