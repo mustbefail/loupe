@@ -15,12 +15,12 @@ Every reviewer subagent (one per lens: base `correctness` / `security` /
 {
   "findings": [
     {
-      "file": "app/user.rb",
+      "file": "src/user.ts",
       "old_line": "",
       "new_line": "42",
       "severity": "blocker|high|medium|low",
       "category": "short-slug",
-      "lens": "Ruby Quality",
+      "lens": "TypeScript Quality",
       "comment": "What is wrong and why.",
       "suggestion": { "from": "old code", "to": "new code" }
     }
@@ -232,16 +232,16 @@ defines where such a finding is reported if that happens.
 ## loupe review report
 
 ### Fixed (N)
-- `app/user.rb:42` [high/sql-injection] <comment> — fixed this iteration.
+- `src/user.ts:42` [high/sql-injection] <comment> — fixed this iteration.
 
 ### Deferred (N)
-- `app/order.rb:17` [medium/n-plus-one] <comment>
+- `src/order.ts:17` [medium/n-plus-one] <comment>
   Suggestion: replace `from` with `to`.
-- `app/session.rb:9` [high/missing-null-check] <comment> — excluded by `--severity-gate blocker`.
-- `app/cache.rb:23` [blocker/race-condition] <comment> — attempted, unresolved.
+- `src/session.ts:9` [high/missing-null-check] <comment> — excluded by `--severity-gate blocker`.
+- `src/cache.ts:23` [blocker/race-condition] <comment> — attempted, unresolved.
 
 ### Rejected (N)
-- `app/util.rb:8` [low/naming] <comment> — judge: <rejected[].reason for this key>
+- `src/util.ts:8` [low/naming] <comment> — judge: <rejected[].reason for this key>
 
 ### Diff
 Run `git diff --stat` (or `git diff`) in the working tree to see everything
@@ -272,8 +272,8 @@ commit the changes yourself.
   across the section.
 - A pure-deletion finding (`new_line: ""`, §1) has no line in the current
   working tree to point at. Render its locator as the bare path with no
-  trailing colon or line number — `` `app/util.rb` [low/naming] <comment>
-  `` — never `` `app/util.rb:` `` with a dangling colon and an empty line
+  trailing colon or line number — `` `src/util.ts` [low/naming] <comment>
+  `` — never `` `src/util.ts:` `` with a dangling colon and an empty line
   number. (`old_line`, if useful context, belongs in the prose of
   `<comment>`, not in the locator.)
 - The report never fabricates a commit or a diff — it only points at

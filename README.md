@@ -60,21 +60,22 @@ doesn't exist, only the built-in lenses run. Each entry becomes its own lens:
 
 ```yaml
 instructions:
-  - name: Ruby Quality
+  - name: TypeScript Quality
     fileFilters:
-      - "**/*.rb"
-      - "!spec/**"
+      - "**/*.ts"
+      - "!**/*.test.ts"
     instructions: |
-      Enforce our Ruby style guide: prefer keyword arguments for methods
-      with more than two parameters, avoid rescuing StandardError broadly,
-      require frozen string literals.
+      Enforce our TypeScript conventions: no `any` used to silence the
+      compiler (prefer `unknown` plus narrowing), explicit return types on
+      exported functions, and no non-null `!` assertions that paper over a
+      possibly-undefined value.
 ```
 
 - `name` — free-text identifier; also shown in the lens's findings. Custom
   lenses run **in addition** to the built-ins; to drop a built-in, disable it
   (below) rather than reusing its name.
-- `fileFilters` *(optional)* — glob patterns. A plain pattern (`**/*.rb`) is
-  an include; a `!`-prefixed pattern (`!spec/**`) is an exclude. A file is in
+- `fileFilters` *(optional)* — glob patterns. A plain pattern (`**/*.ts`) is
+  an include; a `!`-prefixed pattern (`!**/*.test.ts`) is an exclude. A file is in
   scope when it matches at least one include (or there are no includes at
   all, meaning "everything") and matches no exclude. Omit the key to apply
   the lens to every file.

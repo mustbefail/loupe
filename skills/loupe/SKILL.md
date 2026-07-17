@@ -427,7 +427,7 @@ rule (first match wins):
 
 For any finding whose `new_line` is `""` (a pure-deletion finding), render
 the locator as the bare path with no trailing colon or line number —
-`` `app/util.rb` `` — never `` `app/util.rb:` ``.
+`` `src/util.ts` `` — never `` `src/util.ts:` ``.
 
 Template (mirrors `references/output-format.md` §5 exactly):
 
@@ -435,16 +435,16 @@ Template (mirrors `references/output-format.md` §5 exactly):
 ## loupe review report
 
 ### Fixed (N)
-- `app/user.rb:42` [high/sql-injection] <comment> — fixed this iteration.
+- `src/user.ts:42` [high/sql-injection] <comment> — fixed this iteration.
 
 ### Deferred (N)
-- `app/order.rb:17` [medium/n-plus-one] <comment>
+- `src/order.ts:17` [medium/n-plus-one] <comment>
   Suggestion: replace `from` with `to`.
-- `app/session.rb:9` [high/missing-null-check] <comment> — excluded by `--severity-gate blocker`.
-- `app/cache.rb:23` [blocker/race-condition] <comment> — attempted, unresolved.
+- `src/session.ts:9` [high/missing-null-check] <comment> — excluded by `--severity-gate blocker`.
+- `src/cache.ts:23` [blocker/race-condition] <comment> — attempted, unresolved.
 
 ### Rejected (N)
-- `app/util.rb:8` [low/naming] <comment> — judge: <rejected reason>
+- `src/util.ts:8` [low/naming] <comment> — judge: <rejected reason>
 
 ### Diff
 Run `git diff --stat` (or `git diff`) in the working tree to see everything

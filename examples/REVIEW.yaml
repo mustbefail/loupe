@@ -24,7 +24,7 @@
 # under `disableDefaultLenses` (names matched case-insensitively).
 
 # Drop built-in lenses you don't want. Here we turn off the built-in
-# `performance` lens because lens 4 below replaces it with a Rails-specific one.
+# `performance` lens because lens 4 below replaces it with a Node/TS-specific one.
 disableDefaultLenses:
   - performance
 
@@ -38,15 +38,15 @@ instructions:
       - No TODO/FIXME left without a linked ticket id.
 
   # 2) Language-scoped lens with an include and two excludes.
-  - name: Python Quality
+  - name: TypeScript Quality
     fileFilters:
-      - "**/*.py"
-      - "!**/migrations/**"
-      - "!tests/**"
+      - "**/*.ts"
+      - "!**/*.test.ts"
+      - "!**/*.d.ts"
     instructions: |
-      - Type hints on every public function signature.
-      - No bare `except:` — catch specific exceptions.
-      - Prefer dependency injection over module-level singletons.
+      - No `any` to silence the compiler — prefer `unknown` + narrowing.
+      - Explicit return types on exported functions.
+      - No non-null `!` assertions that paper over a possibly-undefined value.
 
   # 3) A domain lens routed to the security reviewer instead of the default.
   - name: Payments Safety
@@ -61,9 +61,10 @@ instructions:
 
   # 4) Replacing a built-in lens: disable it above (see disableDefaultLenses)
   #    and add your own, differently-named lens.
-  - name: Rails Performance
+  - name: Node Performance
     fileFilters:
-      - "**/*.rb"
+      - "**/*.ts"
     instructions: |
-      Rails hot paths: flag N+1 queries, missing `includes`/eager loading, and
-      per-request calls to external services that should be cached.
+      Node hot paths: flag `await` inside a loop over independent work (use
+      `Promise.all`), synchronous `fs`/`crypto` on a request path, and N+1
+      access patterns (batch or `include` in the ORM instead of per-row queries).

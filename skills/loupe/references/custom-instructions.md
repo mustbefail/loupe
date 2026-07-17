@@ -14,14 +14,15 @@ named group:
 
 ```yaml
 instructions:
-  - name: Ruby Quality
+  - name: TypeScript Quality
     fileFilters:
-      - "**/*.rb"
-      - "!spec/**"
+      - "**/*.ts"
+      - "!**/*.test.ts"
     instructions: |
-      Enforce our Ruby style guide: prefer keyword arguments for methods
-      with more than two parameters, avoid rescuing StandardError broadly,
-      require frozen string literals.
+      Enforce our TypeScript conventions: no `any` used to silence the compiler
+      (prefer `unknown` plus narrowing), explicit return types on exported
+      functions, and no non-null `!` assertions that paper over a
+      possibly-undefined value.
 ```
 
 - `name` — a free-text identifier for the group. This exact string becomes
@@ -32,10 +33,10 @@ instructions:
   in `build-context.mjs`) — this is **not** Python's `fnmatch` module (that
   module has no `**` special-casing); it is loupe's own matcher:
   - A bare `*` compiles to `.*` and **does** cross a `/` on its own — e.g.
-    `*.rb` matches `app/models/user.rb`, not just files at the repo root.
+    `*.ts` matches `src/models/user.ts`, not just files at the repo root.
   - `**` immediately followed by `/` means "zero or more directory
-    segments" — e.g. `db/migrate/**/*.rb` matches both `db/migrate/x.rb`
-    (zero segments) and `db/migrate/a/b/x.rb` (two segments).
+    segments" — e.g. `src/**/*.ts` matches both `src/x.ts`
+    (zero segments) and `src/a/b/x.ts` (two segments).
   - `**` at the end of a pattern, or not immediately followed by `/`,
     behaves the same as a bare `*` (matches any run of characters,
     including `/`).
@@ -89,8 +90,8 @@ instructions:
    {
      "type": "custom",
      "instructions": "<the group's trimmed instructions text>",
-     "include_patterns": ["**/*.rb"],
-     "exclude_patterns": ["spec/**"],
+     "include_patterns": ["**/*.ts"],
+     "exclude_patterns": ["**/*.test.ts"],
      "files": [ { "path": "...", "diff": "...", "original": "..." } ]
    }
    ```
@@ -150,10 +151,10 @@ According to custom instructions in '<name>' (<paraphrase>): <comment>
 - `<comment>` — the normal explanation of what's wrong here and why, same
   as any other finding's comment.
 
-Example, for the `Ruby Quality` group above, flagging a broad rescue:
+Example, for the `TypeScript Quality` group above, flagging a compiler-silencing `any`:
 
 ```
-According to custom instructions in 'Ruby Quality' (avoid broad StandardError rescues): this rescue swallows every StandardError subclass, including ones the caller needs to see (e.g. ActiveRecord::RecordNotFound), silently returning nil instead.
+According to custom instructions in 'TypeScript Quality' (no `any` used to silence the compiler): typing this value as `any` turns off type checking for every downstream use, so a genuine type error here would surface only at runtime; narrow from `unknown` instead.
 ```
 
 This prefix format is reserved for custom-lens findings. Base-lens findings
