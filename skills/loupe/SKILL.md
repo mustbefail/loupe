@@ -133,37 +133,38 @@ generated, lenses }`. `mode` is `"working-tree"` (default) or `"committed"`
   reviewable changes between <base> and HEAD)` and stop — skip straight
   past the rest of the loop to nothing (no report needed; there was never
   anything to report on).
-- Otherwise, `lenses` is an object keyed by lens name (`correctness`,
-  `security`, `performance`, plus one key per matched custom-instruction
-  group — see `references/custom-instructions.md` §2). Each value is
-  `{ type: "base"|"custom", instructions, include_patterns?,
-  exclude_patterns?, files: [{ path, diff, original }] }`. Proceed to
-  Step 3 with this object.
+- Otherwise, `lenses` is an object keyed by lens name. The base lenses come
+  from the skill's bundled `rules/default.yaml` (`correctness`, `security`,
+  `performance` on every changed file; `devops` only when the diff touches
+  infra/CI files), plus one key per matched custom lens from the reviewed
+  repo's own `REVIEW.yaml` (see `references/custom-instructions.md` §2). Each
+  value is `{ type: "base"|"custom", agent, reference?, instructions,
+  include_patterns?, exclude_patterns?, files: [{ path, diff, original }] }`.
+  `agent` names the reviewer subagent to dispatch (Step 3); `reference`, when
+  present, points at the lens's checklist section. Proceed to Step 3 with
+  this object.
 
-**Known quirk** (a property of `build-context.mjs` itself, not something to
-work around here): if the reviewed repo's own `REVIEW.yaml` names a custom
-group exactly `correctness`, `security`, or `performance`, `buildLenses()`
-assigns base lenses to the
-`lenses` object *after* custom ones, so the base lens silently overwrites
-that custom entry under the same key. In practice this means a lens key of
-`security` is always, unambiguously, the base security lens by the time
-this JSON is produced — which is convenient for Step 3's routing rule
-below, but it also means such a same-named custom group's own instructions
-and file-filtered scope are lost for that iteration. Nothing to fix here;
-just don't be surprised by it.
+**Lens precedence.** Base lenses are loaded first, then the reviewed repo's
+custom lenses; on a name collision the custom lens **wins** — it overrides
+the base lens of that name (instructions, scope, and `agent`). So a repo can
+retune a built-in lens by defining its own lens of the same name in
+`REVIEW.yaml`. This is deterministic and intentional (older versions did the
+reverse — the base lens silently clobbered the custom one).
 
 ### Step 3 — Fan out reviewers
 
-One reviewer subagent per key in `lenses`. Routing:
+One reviewer subagent per key in `lenses`. Routing is **data-driven**: read
+each lens value's `agent` field and dispatch that subagent — do not hardcode
+routing by lens name.
 
-- Key is exactly `security` → dispatch `security-reviewer`.
-- Every other key (`correctness`, `performance`, and every custom lens) →
-  dispatch `code-reviewer`.
+- `agent: "security-reviewer"` → dispatch `security-reviewer`.
+- `agent: "code-reviewer"` (the default) → dispatch `code-reviewer`.
+- `agent: "general-purpose"` → dispatch `general-purpose`.
 
-Both at `model: opus` (per the design's role table — reviewer lenses run
-Opus regardless of that agent's own default). If neither agent type is
-available in the current environment, fall back to `general-purpose` at
-the same model, passing it the identical prompt described below.
+All at `model: opus` (per the design's role table — reviewer lenses run Opus
+regardless of that agent's own default). If the named agent type isn't
+available in the current environment, fall back to `general-purpose` at the
+same model, passing it the identical prompt described below.
 
 **Dispatch every lens's reviewer in parallel** — issue all of the calls in
 one batch (the Agent tool's multi-invocation-in-one-message pattern), not
@@ -185,10 +186,11 @@ Each reviewer's prompt must be self-contained and include:
    `comment` use the exact citation prefix `According to custom
    instructions in '<name>' (<paraphrase>): <comment>`, where `<name>` is
    this lens's exact key.
-5. For a `type: "base"` lens: point it at the matching section of
-   `references/review-lenses.md` for its checklist and severity
-   calibration, and tell it explicitly **not** to use the custom-lens
-   citation prefix.
+5. For a `type: "base"` lens: point it at its `reference` (the matching
+   section of `references/review-lenses.md` — e.g. that lens's own
+   `#correctness`/`#security`/`#performance`/`#devops` section) for its
+   checklist and severity calibration, and tell it explicitly **not** to use
+   the custom-lens citation prefix.
 6. The "stay in your lane" rule from `references/review-lenses.md`: report
    only findings squarely within this lens's own concern; don't flag
    something another lens would also flag just because it happens to touch

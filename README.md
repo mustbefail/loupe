@@ -48,14 +48,15 @@ Run the test suite with `npm test`.
 
 ## External rules: `REVIEW.yaml`
 
-`loupe` always applies its three built-in, general-purpose lenses
-(`correctness`, `security`, `performance` — see `references/review-lenses.md`).
-On top of those, it will pick up per-file custom rules from an optional
-`REVIEW.yaml` file at the root of the repository being reviewed. If the
-file doesn't exist, `loupe` just runs the built-in lenses.
+`loupe` ships four built-in lenses, defined in the skill's own
+`rules/default.yaml`: `correctness`, `security`, and `performance` run on
+every changed file, and `devops` runs when the diff touches infrastructure/CI
+files (Dockerfiles, Compose, Terraform, GitHub Actions, Ansible, Kubernetes,
+CDK, …). See `references/review-lenses.md` for each lens's checklist.
 
-Each entry in `REVIEW.yaml` becomes its own review lens, scoped to the
-files it matches:
+On top of those, `loupe` picks up per-repo custom lenses from an optional
+`REVIEW.yaml` at the root of the repository being reviewed. If the file
+doesn't exist, only the built-in lenses run. Each entry becomes its own lens:
 
 ```yaml
 instructions:
@@ -69,21 +70,22 @@ instructions:
       require frozen string literals.
 ```
 
-- `name` — a free-text identifier for the lens; it also shows up in that
-  lens's findings so you can tell a custom rule apart from a built-in one.
-- `fileFilters` — a list of glob patterns. A plain pattern (e.g. `**/*.rb`)
-  is an include filter; prefixing a pattern with `!` (e.g. `!spec/**`)
-  makes it an exclude filter instead. A file is in scope for the group when
-  it matches at least one include pattern (or there are no include
-  patterns at all, meaning "everything") and doesn't match any exclude
-  pattern.
-- `instructions` — a free-text block applied to every matching file. It can
-  bundle multiple directives; each is checked independently and reported as
-  a separate finding when violated.
+- `name` — free-text identifier; also shown in the lens's findings. A lens
+  whose `name` equals a built-in one (e.g. `security`) **overrides** that
+  built-in lens for this repo.
+- `fileFilters` *(optional)* — glob patterns. A plain pattern (`**/*.rb`) is
+  an include; a `!`-prefixed pattern (`!spec/**`) is an exclude. A file is in
+  scope when it matches at least one include (or there are no includes at
+  all, meaning "everything") and matches no exclude. Omit the key to apply
+  the lens to every file.
+- `agent` *(optional)* — which reviewer runs the lens: `code-reviewer`
+  (default), `security-reviewer`, or `general-purpose`.
+- `instructions` — the rules to enforce; a `|` block can bundle several, each
+  checked and reported independently.
 
-See `references/custom-instructions.md` for the full source format, the
-citation convention custom-lens findings use, and how matching interacts
-with the base lenses.
+A fuller, commented example lives in [`examples/REVIEW.yaml`](examples/REVIEW.yaml).
+See `references/custom-instructions.md` for the citation convention custom-lens
+findings use and how matching interacts with the base lenses.
 
 ## Known limitations
 

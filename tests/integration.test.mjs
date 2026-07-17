@@ -9,21 +9,35 @@ import { buildLenses } from "../skills/loupe/scripts/build-context.mjs"
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "skills", "loupe", "scripts", "build-context.mjs")
 
-test("buildLenses produces custom + base lenses over matched files", () => {
+test("buildLenses matches files to lens defs and skips zero-match lenses", () => {
   const reviewable = [
     { path: "app/user.rb", oldPath: "app/user.rb", diff: "@@ -1 +1 @@\n+x" },
     { path: "README.md", oldPath: "README.md", diff: "@@ -1 +1 @@\n+y" },
   ]
-  const custom = [
-    { name: "Ruby", instructions: "Check N+1.", include_patterns: ["**/*.rb"], exclude_patterns: [] },
-    { name: "PythonOnly", instructions: "x", include_patterns: ["**/*.py"], exclude_patterns: [] },
+  const defs = [
+    { name: "correctness", type: "base", agent: "code-reviewer", instructions: "c", include_patterns: [], exclude_patterns: [] },
+    { name: "Ruby", type: "custom", agent: "code-reviewer", instructions: "Check N+1.", include_patterns: ["**/*.rb"], exclude_patterns: [] },
+    { name: "PythonOnly", type: "custom", agent: "code-reviewer", instructions: "x", include_patterns: ["**/*.py"], exclude_patterns: [] },
   ]
-  const lenses = buildLenses(reviewable, { "app/user.rb": "old" }, custom)
+  const lenses = buildLenses(reviewable, { "app/user.rb": "old" }, defs)
+  assert.equal(lenses.correctness.files.length, 2) // no include patterns => covers all files
+  assert.equal(lenses.correctness.type, "base")
   assert.deepEqual(lenses.Ruby.files.map((f) => f.path), ["app/user.rb"])
   assert.equal(lenses.Ruby.files[0].original, "old")
-  assert.equal(lenses.correctness.files.length, 2) // base lens covers all
-  assert.ok(lenses.security && lenses.performance)
+  assert.equal(lenses.Ruby.type, "custom")
   assert.equal(lenses.PythonOnly, undefined) // zero-match lens is skipped
+})
+
+test("buildLenses: a later (custom) def overrides a base def of the same name", () => {
+  const reviewable = [{ path: "a.rb", oldPath: "a.rb", diff: "@@ -1 +1 @@\n+x" }]
+  const defs = [
+    { name: "security", type: "base", agent: "security-reviewer", instructions: "base sec", include_patterns: [], exclude_patterns: [] },
+    { name: "security", type: "custom", agent: "code-reviewer", instructions: "custom sec", include_patterns: [], exclude_patterns: [] },
+  ]
+  const lenses = buildLenses(reviewable, {}, defs)
+  assert.equal(lenses.security.type, "custom")
+  assert.equal(lenses.security.instructions, "custom sec")
+  assert.equal(lenses.security.agent, "code-reviewer")
 })
 
 test("CLI emits JSON with lenses for a real diff", () => {

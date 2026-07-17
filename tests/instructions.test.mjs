@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { parseInstructionsYaml, loadCustomInstructions } from "../skills/loupe/scripts/build-context.mjs"
+import { parseInstructionsYaml, loadCustomInstructions, loadDefaultLenses } from "../skills/loupe/scripts/build-context.mjs"
 
 const YAML = `---
 # comment line
@@ -34,6 +34,33 @@ test("parseInstructionsYaml parses names, filters and block scalars", () => {
 test("parseInstructionsYaml drops incomplete items", () => {
   const items = parseInstructionsYaml("instructions:\n  - name: Only Name\n")
   assert.equal(items.length, 0)
+})
+
+test("parseInstructionsYaml parses optional agent/reference and allows a lens with no fileFilters", () => {
+  const y = `instructions:
+  - name: DevOps
+    agent: general-purpose
+    reference: review-lenses.md#devops
+    instructions: |
+      Check infra config.
+`
+  const items = parseInstructionsYaml(y)
+  assert.equal(items.length, 1)
+  assert.equal(items[0].agent, "general-purpose")
+  assert.equal(items[0].reference, "review-lenses.md#devops")
+  assert.deepEqual(items[0].fileFilters, []) // no fileFilters is now allowed (= all files)
+  assert.ok(items[0].instructions.includes("Check infra config."))
+})
+
+test("loadDefaultLenses loads the bundled base lenses with data-driven routing", () => {
+  const defs = loadDefaultLenses()
+  const names = defs.map((d) => d.name)
+  for (const n of ["correctness", "security", "performance", "devops"]) assert.ok(names.includes(n), `missing ${n}`)
+  assert.ok(defs.every((d) => d.type === "base"))
+  assert.equal(defs.find((d) => d.name === "security").agent, "security-reviewer")
+  assert.equal(defs.find((d) => d.name === "correctness").agent, "code-reviewer")
+  const devops = defs.find((d) => d.name === "devops")
+  assert.ok(devops.include_patterns.length > 0) // glob-scoped, not all-files
 })
 
 const COMMENT_YAML = `instructions:
@@ -89,4 +116,6 @@ test("loadCustomInstructions splits include/exclude patterns and strips the ! pr
   assert.ok(result[0].instructions.includes("Check for N+1 queries."))
   assert.deepEqual(result[0].include_patterns, ["**/*.rb"])
   assert.deepEqual(result[0].exclude_patterns, ["spec/**/*"])
+  assert.equal(result[0].type, "custom")
+  assert.equal(result[0].agent, "code-reviewer") // default agent when none given
 })

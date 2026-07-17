@@ -1,12 +1,21 @@
 # Review Lenses (Base)
 
-Three base lenses — `correctness`, `security`, `performance` — run on every
-`loupe` iteration, in addition to any custom lenses matched from
-`REVIEW.yaml` (see `custom-instructions.md`).
-Unlike custom lenses, base lenses are never file-filtered: the reviewer
-subagent for a base lens receives every reviewable changed file for the
-iteration (`type: "base"` in the lens object from `build-context.mjs`, with
-`files` covering the full changed set).
+`loupe`'s base lenses are defined in `rules/default.yaml` — the same YAML
+schema as a repo's `REVIEW.yaml`, plus an `agent` key (which reviewer subagent
+runs the lens) and a `reference` key (which section here holds its checklist).
+`correctness`, `security`, and `performance` run on every reviewable file each
+iteration; `devops` is a base lens too, but it is glob-scoped to
+infrastructure/CI files and only runs when the diff touches them. Custom lenses
+matched from the reviewed repo's own `REVIEW.yaml` run alongside these (see
+`custom-instructions.md`); a custom lens whose `name` matches a base lens
+overrides it.
+
+Each lens object from `build-context.mjs` carries `type` (`"base"` or
+`"custom"`), `agent` (`code-reviewer`, `security-reviewer`, or
+`general-purpose`), and `files` (its matched slice). A lens with no include
+patterns (`correctness`/`security`/`performance`) receives every reviewable
+changed file; a scoped lens (`devops` and most custom lenses) receives only
+its matched files.
 
 Each checklist below is a distillation of general, widely-agreed code-review
 practice for that concern — not a transcription of any specific tool's
@@ -150,3 +159,53 @@ Severity guidance:
   premature optimization on an unproven hot path is noise, not a finding,
   and should generally be omitted rather than filed at all unless clearly
   worth a human's attention.
+
+## `devops`
+
+Scope: runs only on infrastructure, CI, container, and deploy files
+(Dockerfiles, Compose, Terraform/HCL, GitHub Actions and GitLab CI, Ansible,
+Kubernetes/Helm, CDK). Review the operational correctness and safety of that
+configuration — leave application-logic bugs to `correctness` and app-level
+authn/authz to `security`.
+
+Checklist:
+
+- **Image hygiene** — base images pinned to a digest or specific version
+  (never a bare `:latest`); minimal, trusted base; multi-stage builds that
+  don't copy secrets or build-only tooling into the final image; a
+  `.dockerignore` that keeps `.git`, secrets, and `node_modules` out of the
+  build context.
+- **Least privilege in containers** — runs as a non-root user where it can;
+  no gratuitous `--privileged`, added capabilities, or host mounts;
+  read-only root filesystem where feasible.
+- **Secrets** — no credentials, tokens, private keys, or connection strings
+  committed into Dockerfiles, Compose, CI workflows, or IaC; secrets come
+  from a secret store or masked CI variables, never `ENV`/plaintext in the
+  repo.
+- **IaC least privilege** — IAM policies, roles, security groups, and bucket
+  policies grant only what's needed (no `Action: "*"` / `Resource: "*"`, no
+  `0.0.0.0/0` ingress on sensitive ports); state/backends encrypted.
+- **Idempotency & safety** — Ansible tasks declare proper state and are
+  idempotent; Terraform changes that destroy or replace stateful resources
+  are intentional and guarded; provider/module versions pinned.
+- **Reliability** — healthchecks, resource requests/limits, and restart
+  policies set where the platform expects them; no obvious new single point
+  of failure.
+- **CI/CD safety** — third-party actions pinned to a commit SHA (not a moving
+  tag); no secret echoed to logs; workflows on untrusted triggers (e.g.
+  `pull_request_target`) don't run attacker-controlled code with privileged
+  tokens; least-privilege `permissions:` on the workflow/job.
+
+Severity guidance:
+
+- **blocker** — a committed secret/credential/private key; a public exposure
+  of a sensitive resource (open security group to a database, world-readable
+  bucket); a CI workflow that runs untrusted input with privileged secrets.
+- **high** — a container running as root without need, an over-broad
+  IAM/policy wildcard, an unpinned base image or CI action on a
+  security-relevant path, a non-idempotent or destructive provisioning step
+  without a guard.
+- **medium** — missing healthcheck/resource limits, missing `.dockerignore`,
+  a moving version tag on a non-critical dependency.
+- **low** — style/consistency nits in config (ordering, naming, formatting)
+  with no operational impact.

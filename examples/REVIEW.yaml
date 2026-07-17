@@ -1,0 +1,63 @@
+# REVIEW.yaml — per-repository review rules for the `loupe` code-review skill.
+#
+# Drop this file at the ROOT of the repo you want reviewed. Each entry under
+# `instructions:` becomes its own review lens, layered on top of loupe's
+# built-in lenses (correctness, security, performance, devops). loupe runs a
+# lens only when the current diff touches a file it matches, so scoped lenses
+# cost nothing on unrelated changes.
+#
+# Keys per lens:
+#   name          (required)  Free-text label; also shown in that lens's findings.
+#   instructions  (required)  The rules to enforce. A `|` block can bundle many;
+#                             each is checked independently and reported separately.
+#   fileFilters   (optional)  Glob patterns. A plain pattern is an INCLUDE; a
+#                             pattern prefixed with `!` is an EXCLUDE. A file is in
+#                             scope when it matches at least one include (or there
+#                             are no includes at all, meaning "everything") and
+#                             matches no exclude. Omit the key to apply to every file.
+#   agent         (optional)  Which reviewer subagent runs the lens:
+#                             code-reviewer (default) | security-reviewer | general-purpose
+#   reference     (optional)  A doc path/anchor for the reviewer to consult.
+#
+# A lens whose `name` equals a built-in one (e.g. `security`) OVERRIDES that
+# built-in lens for this repo.
+
+instructions:
+  # 1) Repo-wide house style — no fileFilters, so it runs on every changed file.
+  - name: House Style
+    instructions: |
+      Enforce our conventions:
+      - Public functions and exported types must have a doc comment.
+      - Prefer early returns over deeply nested conditionals.
+      - No TODO/FIXME left without a linked ticket id.
+
+  # 2) Language-scoped lens with an include and two excludes.
+  - name: Python Quality
+    fileFilters:
+      - "**/*.py"
+      - "!**/migrations/**"
+      - "!tests/**"
+    instructions: |
+      - Type hints on every public function signature.
+      - No bare `except:` — catch specific exceptions.
+      - Prefer dependency injection over module-level singletons.
+
+  # 3) A domain lens routed to the security reviewer instead of the default.
+  - name: Payments Safety
+    agent: security-reviewer
+    fileFilters:
+      - "**/payments/**"
+      - "**/billing/**"
+    instructions: |
+      - Never log full card numbers, CVV, or raw payment tokens.
+      - All money math uses integer minor units (cents), never floats.
+      - Idempotency keys are required on every charge/refund call.
+
+  # 4) Overriding a built-in lens: same `name` replaces loupe's default
+  #    `performance` lens with this repo-specific one.
+  - name: performance
+    fileFilters:
+      - "**/*.rb"
+    instructions: |
+      Rails hot paths: flag N+1 queries, missing `includes`/eager loading, and
+      per-request calls to external services that should be cached.

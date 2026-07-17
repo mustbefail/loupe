@@ -10,7 +10,7 @@
       "name": "loupe",
       "source": "./",
       "description": "Headless iterative code review — an ensemble of per-lens reviewer subagents plus a judge, looping review→fix→review until convergence.",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "license": "MIT",
       "category": "code-quality",
       "keywords": [

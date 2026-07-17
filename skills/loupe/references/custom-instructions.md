@@ -28,7 +28,7 @@ instructions:
   the lens name (the key under `lenses` in `build-context.mjs`'s output,
   and the value a reviewer for this lens reports in the finding's `lens`
   field).
-- `fileFilters` — a list of glob patterns using glob matching (see `fnmatch`
+- `fileFilters` *(optional)* — a list of glob patterns using glob matching (see `fnmatch`
   in `build-context.mjs`) — this is **not** Python's `fnmatch` module (that
   module has no `**` special-casing); it is loupe's own matcher:
   - A bare `*` compiles to `.*` and **does** cross a `/` on its own — e.g.
@@ -45,6 +45,16 @@ instructions:
   An entry prefixed with `!` is an **exclude** pattern instead of an
   include pattern (the `!` itself is stripped before the glob is matched
   — it is not part of the character-class syntax above).
+
+  `fileFilters` is **optional**: omit it entirely to apply the lens to every
+  changed file (equivalent to a single `**` include).
+- `agent` *(optional)* — which reviewer subagent runs this lens:
+  `code-reviewer` (the default), `security-reviewer`, or `general-purpose`.
+  It surfaces as the lens's `agent` field and drives the Step 3 routing in
+  `SKILL.md`.
+- `reference` *(optional)* — a doc path/anchor the reviewer should consult
+  for a fuller checklist (the built-in lenses use it to point at their
+  section of `review-lenses.md`).
 - `instructions` — a free-text block. It may bundle several distinct
   directives/rules under one group — nothing requires it to be a single
   rule.

@@ -9,7 +9,7 @@
 import { execFileSync } from "node:child_process"
 import { readFileSync, existsSync, realpathSync } from "node:fs"
 import { join } from "node:path"
-import { pathToFileURL } from "node:url"
+import { pathToFileURL, fileURLToPath } from "node:url"
 
 export function parseDiff(raw) {
   const files = []
@@ -144,6 +144,10 @@ export function parseInstructionsYaml(text) {
     const nameM = line.match(/^\s*-\s+name:\s*(.+?)\s*$/)
     if (nameM) { cur = { name: clean(nameM[1]), fileFilters: [], instructions: "" }; items.push(cur); mode = null; continue }
     if (!cur) continue
+    const agentM = line.match(/^\s*agent:\s*(.+?)\s*$/)
+    if (agentM) { cur.agent = clean(agentM[1]); mode = null; continue }
+    const refM = line.match(/^\s*reference:\s*(.+?)\s*$/)
+    if (refM) { cur.reference = clean(refM[1]); mode = null; continue }
     if (/^\s*fileFilters:\s*$/.test(line)) { mode = "fileFilters"; continue }
     const blockM = line.match(/^(\s*)instructions:\s*\|\s*$/)
     if (blockM) { mode = "instructions"; keyIndent = blockM[1].length; blockLines = []; continue }
@@ -155,20 +159,43 @@ export function parseInstructionsYaml(text) {
     }
   }
   flushBlock()
-  return items.filter((i) => i.name && i.instructions.trim() && i.fileFilters.length)
+  // A lens needs a name and instructions; fileFilters are optional (absent = all files).
+  return items.filter((i) => i.name && i.instructions.trim())
 }
 
+// Normalizes a parsed YAML item into a lens definition. `fileFilters` split into
+// include/exclude (a leading `!` marks an exclude); `agent` defaults to code-reviewer.
+function toLensDef(i, type) {
+  return {
+    name: i.name,
+    type,
+    agent: i.agent || "code-reviewer",
+    reference: i.reference,
+    instructions: i.instructions,
+    include_patterns: i.fileFilters.filter((f) => !f.startsWith("!")),
+    exclude_patterns: i.fileFilters.filter((f) => f.startsWith("!")).map((f) => f.slice(1)),
+  }
+}
+
+// Bundled default lenses (correctness/security/performance/devops), shipped in
+// rules/default.yaml next to this skill. Same YAML schema as a repo's REVIEW.yaml,
+// plus optional `agent` (which reviewer runs the lens) and `reference` (its section
+// in references/review-lenses.md). Tagged type "base".
+export function loadDefaultLenses(deps = { readFileSync, existsSync }) {
+  const file = fileURLToPath(new URL("../rules/default.yaml", import.meta.url))
+  if (!deps.existsSync(file)) { console.error("loupe: default lenses not found at rules/default.yaml"); return [] }
+  let parsed
+  try { parsed = parseInstructionsYaml(deps.readFileSync(file, "utf8")) } catch { return [] }
+  return parsed.map((i) => toLensDef(i, "base"))
+}
+
+// Per-repo custom lenses from the reviewed repo's own REVIEW.yaml. Tagged type "custom".
 export function loadCustomInstructions(repo, deps = { readFileSync, existsSync }) {
   const file = join(repo, "REVIEW.yaml")
   if (!deps.existsSync(file)) return []
   let parsed
   try { parsed = parseInstructionsYaml(deps.readFileSync(file, "utf8")) } catch { return [] }
-  return parsed.map((i) => ({
-    name: i.name,
-    instructions: i.instructions,
-    include_patterns: i.fileFilters.filter((f) => !f.startsWith("!")),
-    exclude_patterns: i.fileFilters.filter((f) => f.startsWith("!")).map((f) => f.slice(1)),
-  }))
+  return parsed.map((i) => toLensDef(i, "custom"))
 }
 
 // Part of the context-formatting API retained for callers/tests, though main()'s
@@ -211,31 +238,28 @@ export function formatCustomInstructions(instructions) {
   return `<custom_instructions>\nApply these additional review instructions to matching files:\n\n${items}\n</custom_instructions>`
 }
 
-const BASE_LENSES = ["correctness", "security", "performance"]
-
-export function buildLenses(reviewable, filesContent, customInstructions) {
+// Builds the per-lens context from a flat list of lens definitions (base first,
+// then custom). A lens with no include patterns matches every reviewable file; a
+// lens whose globs match nothing is skipped. On a name collision the later
+// definition wins, so a custom lens overrides a base lens of the same name.
+export function buildLenses(reviewable, filesContent, lensDefs) {
   const withOriginal = (f) => ({
     path: f.path,
     diff: f.diff,
     original: f.oldPath && !f.newFile ? (filesContent[f.oldPath] ?? null) : null,
   })
   const lenses = {}
-  for (const ins of customInstructions) {
-    const matched = reviewable.filter((f) => matchesInstruction(f.path, ins))
+  for (const def of lensDefs) {
+    const matched = reviewable.filter((f) => matchesInstruction(f.path, def))
     if (!matched.length) continue
-    lenses[ins.name] = {
-      type: "custom",
-      instructions: ins.instructions.trim(),
-      include_patterns: ins.include_patterns,
-      exclude_patterns: ins.exclude_patterns,
+    lenses[def.name] = {
+      type: def.type,
+      agent: def.agent,
+      reference: def.reference,
+      instructions: def.instructions.trim(),
+      include_patterns: def.include_patterns,
+      exclude_patterns: def.exclude_patterns,
       files: matched.map(withOriginal),
-    }
-  }
-  for (const name of BASE_LENSES) {
-    lenses[name] = {
-      type: "base",
-      instructions: `Apply the built-in "${name}" review lens (see references/review-lenses.md).`,
-      files: reviewable.map(withOriginal),
     }
   }
   return lenses
@@ -287,10 +311,12 @@ function main() {
     filesContent[f.oldPath] = content
   }
   const renamed = Object.fromEntries(allDiffs.filter((f) => f.renamed).map((f) => [f.newPath, f.oldPath]))
-  const custom = loadCustomInstructions(repo).filter((ins) => reviewable.some((f) => matchesInstruction(f.path, ins)))
+  // Base lenses (bundled default.yaml) first, then the repo's own REVIEW.yaml; a
+  // same-named custom lens overrides its base counterpart (buildLenses, last wins).
+  const lensDefs = [...loadDefaultLenses(), ...loadCustomInstructions(repo)]
 
   // Pre-format the diff for each lens file so subagents receive the tagged form.
-  const lenses = buildLenses(reviewable, filesContent, custom)
+  const lenses = buildLenses(reviewable, filesContent, lensDefs)
   for (const lens of Object.values(lenses)) {
     for (const f of lens.files) f.diff = formatDiffLines(f.diff)
   }
