@@ -198,6 +198,33 @@ export function loadCustomInstructions(repo, deps = { readFileSync, existsSync }
   return parsed.map((i) => toLensDef(i, "custom"))
 }
 
+// Reads the optional top-level `disableDefaultLenses:` key from REVIEW.yaml —
+// a list of base-lens names the repo wants turned off entirely (block sequence
+// or inline `[a, b]` form). Names are matched case-insensitively in main().
+export function parseDisabledLenses(text) {
+  const out = []
+  let inList = false
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/\r$/, "")
+    const inline = line.match(/^disableDefaultLenses:\s*\[(.*)\]\s*$/)
+    if (inline) { for (const p of inline[1].split(",")) { const v = clean(p); if (v) out.push(v) } ; inList = false; continue }
+    if (/^disableDefaultLenses:\s*$/.test(line)) { inList = true; continue }
+    if (inList) {
+      const m = line.match(/^\s+-\s*(.+?)\s*$/)
+      if (m) { out.push(clean(m[1])); continue }
+      if (line.trim() === "" || line.trim().startsWith("#")) continue
+      inList = false
+    }
+  }
+  return out
+}
+
+export function loadDisabledLenses(repo, deps = { readFileSync, existsSync }) {
+  const file = join(repo, "REVIEW.yaml")
+  if (!deps.existsSync(file)) return []
+  try { return parseDisabledLenses(deps.readFileSync(file, "utf8")) } catch { return [] }
+}
+
 // Part of the context-formatting API retained for callers/tests, though main()'s
 // per-lens path below doesn't invoke it.
 export const escapeHtml = (s) =>
@@ -240,8 +267,10 @@ export function formatCustomInstructions(instructions) {
 
 // Builds the per-lens context from a flat list of lens definitions (base first,
 // then custom). A lens with no include patterns matches every reviewable file; a
-// lens whose globs match nothing is skipped. On a name collision the later
-// definition wins, so a custom lens overrides a base lens of the same name.
+// lens whose globs match nothing is skipped. Custom lenses are additive — to
+// remove a base lens, filter it out before calling (see `disableDefaultLenses`
+// in main()). Names should be distinct; an exact-name duplicate resolves to the
+// later (custom) def by object-key order.
 export function buildLenses(reviewable, filesContent, lensDefs) {
   const withOriginal = (f) => ({
     path: f.path,
@@ -311,9 +340,12 @@ function main() {
     filesContent[f.oldPath] = content
   }
   const renamed = Object.fromEntries(allDiffs.filter((f) => f.renamed).map((f) => [f.newPath, f.oldPath]))
-  // Base lenses (bundled default.yaml) first, then the repo's own REVIEW.yaml; a
-  // same-named custom lens overrides its base counterpart (buildLenses, last wins).
-  const lensDefs = [...loadDefaultLenses(), ...loadCustomInstructions(repo)]
+  // Base lenses (bundled default.yaml), minus any the repo disabled via
+  // `disableDefaultLenses:` (case-insensitive), then the repo's own REVIEW.yaml.
+  // A same-named custom lens overrides its base counterpart (buildLenses, last wins).
+  const disabled = new Set(loadDisabledLenses(repo).map((n) => n.toLowerCase()))
+  const baseDefs = loadDefaultLenses().filter((d) => !disabled.has(d.name.toLowerCase()))
+  const lensDefs = [...baseDefs, ...loadCustomInstructions(repo)]
 
   // Pre-format the diff for each lens file so subagents receive the tagged form.
   const lenses = buildLenses(reviewable, filesContent, lensDefs)

@@ -19,8 +19,14 @@
 #                             code-reviewer (default) | security-reviewer | general-purpose
 #   reference     (optional)  A doc path/anchor for the reviewer to consult.
 #
-# A lens whose `name` equals a built-in one (e.g. `security`) OVERRIDES that
-# built-in lens for this repo.
+# Custom lenses run IN ADDITION to the built-ins. To drop a built-in lens — to
+# remove it, or to replace it with your own differently-named lens — list it
+# under `disableDefaultLenses` (names matched case-insensitively).
+
+# Drop built-in lenses you don't want. Here we turn off the built-in
+# `performance` lens because lens 4 below replaces it with a Rails-specific one.
+disableDefaultLenses:
+  - performance
 
 instructions:
   # 1) Repo-wide house style — no fileFilters, so it runs on every changed file.
@@ -53,9 +59,9 @@ instructions:
       - All money math uses integer minor units (cents), never floats.
       - Idempotency keys are required on every charge/refund call.
 
-  # 4) Overriding a built-in lens: same `name` replaces loupe's default
-  #    `performance` lens with this repo-specific one.
-  - name: performance
+  # 4) Replacing a built-in lens: disable it above (see disableDefaultLenses)
+  #    and add your own, differently-named lens.
+  - name: Rails Performance
     fileFilters:
       - "**/*.rb"
     instructions: |

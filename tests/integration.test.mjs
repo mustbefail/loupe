@@ -40,6 +40,41 @@ test("buildLenses: a later (custom) def overrides a base def of the same name", 
   assert.equal(lenses.security.agent, "code-reviewer")
 })
 
+test("CLI: disableDefaultLenses drops base lenses; custom lenses run in addition", () => {
+  const repo = mkdtempSync(join(tmpdir(), "loupe-"))
+  try {
+    const g = (...a) => execFileSync("git", a, { cwd: repo, encoding: "utf8" })
+    g("init", "-q"); g("config", "user.email", "t@t"); g("config", "user.name", "t")
+    writeFileSync(join(repo, "Dockerfile"), "FROM node:20\n")
+    g("add", "."); g("commit", "-qm", "base")
+    const b = g("branch", "--show-current").trim()
+    g("checkout", "-qb", "feat")
+    writeFileSync(join(repo, "Dockerfile"), "FROM node:latest\n")
+    writeFileSync(join(repo, "REVIEW.yaml"), [
+      "disableDefaultLenses:",
+      "  - performance",
+      "  - devops",
+      "instructions:",
+      "  - name: DevOps",
+      "    fileFilters:",
+      '      - "*Dockerfile*"',
+      "    instructions: |",
+      "      Pin base images to a digest.",
+      "",
+    ].join("\n"))
+    g("add", "."); g("commit", "-qam", "change")
+    const data = JSON.parse(execFileSync("node", [SCRIPT, "--base", b, "--repo", repo], { encoding: "utf8" }))
+    const keys = Object.keys(data.lenses)
+    assert.ok(!keys.includes("performance"))   // disabled
+    assert.ok(!keys.includes("devops"))        // disabled (we run our own DevOps lens instead)
+    assert.ok(keys.includes("DevOps"))         // custom lens runs in addition
+    assert.equal(data.lenses.DevOps.type, "custom")
+    assert.ok(keys.includes("correctness") && keys.includes("security")) // other base lenses untouched
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+  }
+})
+
 test("CLI emits JSON with lenses for a real diff", () => {
   const repo = mkdtempSync(join(tmpdir(), "loupe-"))
   try {

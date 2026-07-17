@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { parseInstructionsYaml, loadCustomInstructions, loadDefaultLenses } from "../skills/loupe/scripts/build-context.mjs"
+import { parseInstructionsYaml, loadCustomInstructions, loadDefaultLenses, parseDisabledLenses, loadDisabledLenses } from "../skills/loupe/scripts/build-context.mjs"
 
 const YAML = `---
 # comment line
@@ -50,6 +50,26 @@ test("parseInstructionsYaml parses optional agent/reference and allows a lens wi
   assert.equal(items[0].reference, "review-lenses.md#devops")
   assert.deepEqual(items[0].fileFilters, []) // no fileFilters is now allowed (= all files)
   assert.ok(items[0].instructions.includes("Check infra config."))
+})
+
+test("parseDisabledLenses reads block and inline forms and ignores unrelated YAML", () => {
+  const block = `disableDefaultLenses:
+  - devops
+  - performance
+instructions:
+  - name: X
+    instructions: |
+      y
+`
+  assert.deepEqual(parseDisabledLenses(block), ["devops", "performance"])
+  assert.deepEqual(parseDisabledLenses("disableDefaultLenses: [devops, security]\n"), ["devops", "security"])
+  assert.deepEqual(parseDisabledLenses("instructions:\n  - name: X\n    instructions: y\n"), [])
+})
+
+test("loadDisabledLenses reads the disable list from REVIEW.yaml", () => {
+  const yaml = "disableDefaultLenses:\n  - performance\ninstructions:\n  - name: X\n    instructions: y\n"
+  assert.deepEqual(loadDisabledLenses("/repo", { existsSync: () => true, readFileSync: () => yaml }), ["performance"])
+  assert.deepEqual(loadDisabledLenses("/repo", { existsSync: () => false, readFileSync: () => { throw new Error("no") } }), [])
 })
 
 test("loadDefaultLenses loads the bundled base lenses with data-driven routing", () => {

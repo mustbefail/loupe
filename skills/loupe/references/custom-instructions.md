@@ -61,6 +61,19 @@ instructions:
 
 `loupe` only reads this file; it never writes it.
 
+**Disabling base lenses.** Custom lenses run *in addition* to the built-in
+lenses. To drop a built-in lens — to remove it, or to replace it with your own
+differently-named lens — add a top-level `disableDefaultLenses:` list (block
+sequence or inline `[a, b]`; names matched case-insensitively) alongside
+`instructions:`:
+
+```yaml
+disableDefaultLenses:
+  - performance
+instructions:
+  - name: ...
+```
+
 ## 2. How `build-context.mjs` turns this into lenses
 
 1. `loadCustomInstructions()` parses the YAML and, per group, splits

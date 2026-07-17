@@ -7,8 +7,8 @@ runs the lens) and a `reference` key (which section here holds its checklist).
 iteration; `devops` is a base lens too, but it is glob-scoped to
 infrastructure/CI files and only runs when the diff touches them. Custom lenses
 matched from the reviewed repo's own `REVIEW.yaml` run alongside these (see
-`custom-instructions.md`); a custom lens whose `name` matches a base lens
-overrides it.
+`custom-instructions.md`); to drop a base lens, a repo lists it under
+`disableDefaultLenses` in its `REVIEW.yaml`.
 
 Each lens object from `build-context.mjs` carries `type` (`"base"` or
 `"custom"`), `agent` (`code-reviewer`, `security-reviewer`, or

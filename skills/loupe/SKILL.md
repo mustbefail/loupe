@@ -144,12 +144,14 @@ generated, lenses }`. `mode` is `"working-tree"` (default) or `"committed"`
   present, points at the lens's checklist section. Proceed to Step 3 with
   this object.
 
-**Lens precedence.** Base lenses are loaded first, then the reviewed repo's
-custom lenses; on a name collision the custom lens **wins** — it overrides
-the base lens of that name (instructions, scope, and `agent`). So a repo can
-retune a built-in lens by defining its own lens of the same name in
-`REVIEW.yaml`. This is deterministic and intentional (older versions did the
-reverse — the base lens silently clobbered the custom one).
+**Base lenses + disable.** The lens set is the bundled base lenses **minus**
+any the repo turned off, **plus** the repo's custom lenses. A repo drops a
+built-in it doesn't want with a top-level `disableDefaultLenses: [<name>, …]`
+list in its `REVIEW.yaml` (names matched case-insensitively); those base lenses
+are removed before the merge. Custom lenses are otherwise purely additive — to
+*replace* a built-in, disable it and add your own differently-named lens.
+(Reusing a base lens's exact name isn't the intended mechanism; if you do, the
+custom one wins by load order, but prefer `disableDefaultLenses`.)
 
 ### Step 3 — Fan out reviewers
 

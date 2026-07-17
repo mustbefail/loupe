@@ -70,9 +70,9 @@ instructions:
       require frozen string literals.
 ```
 
-- `name` — free-text identifier; also shown in the lens's findings. A lens
-  whose `name` equals a built-in one (e.g. `security`) **overrides** that
-  built-in lens for this repo.
+- `name` — free-text identifier; also shown in the lens's findings. Custom
+  lenses run **in addition** to the built-ins; to drop a built-in, disable it
+  (below) rather than reusing its name.
 - `fileFilters` *(optional)* — glob patterns. A plain pattern (`**/*.rb`) is
   an include; a `!`-prefixed pattern (`!spec/**`) is an exclude. A file is in
   scope when it matches at least one include (or there are no includes at
@@ -82,6 +82,14 @@ instructions:
   (default), `security-reviewer`, or `general-purpose`.
 - `instructions` — the rules to enforce; a `|` block can bundle several, each
   checked and reported independently.
+
+To turn a built-in lens **off** entirely (rather than replace it), add a
+top-level `disableDefaultLenses:` list (names are case-insensitive):
+
+```yaml
+disableDefaultLenses:
+  - performance
+```
 
 A fuller, commented example lives in [`examples/REVIEW.yaml`](examples/REVIEW.yaml).
 See `references/custom-instructions.md` for the citation convention custom-lens
