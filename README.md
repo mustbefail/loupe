@@ -29,10 +29,21 @@ sees its own edits on the next re-diff. All arguments are optional:
 ```
 --base <ref>            # ref to diff against (default: repo's default branch)
 --committed             # review only committed changes (mergeBase..HEAD); default also includes the working tree
+--all                   # review the entire repo (diff against git's empty tree) instead of just the base..HEAD diff
 --max-iterations <n>    # hard cap on review→fix passes (default: 3)
 --fix | --no-fix        # whether to auto-fix actionable findings (default: --fix)
 --severity-gate <level> # min severity to auto-fix: blocker|high|medium|low (default: high)
 ```
+
+Just downloaded or cloned a codebase and want a review of everything in it,
+not just recent changes? Pass `--all` — `loupe` diffs against git's empty
+tree, so every tracked file is treated as newly added and gets reviewed. The
+repository still needs to be a git repo (that safety rule doesn't change);
+for a plain directory, run `git init && git add -A` first, then invoke
+`loupe --all`. Trust note: `loupe` still reads that repo's own `REVIEW.yaml`
+if it has one — its custom-lens instructions and `disableDefaultLenses` are
+honored the same as in any other mode — so only point `--all` at a
+repository whose `REVIEW.yaml` you trust.
 
 ### Local development
 
@@ -48,11 +59,12 @@ Run the test suite with `npm test`.
 
 ## External rules: `REVIEW.yaml`
 
-`loupe` ships four built-in lenses, defined in the skill's own
-`rules/default.yaml`: `correctness`, `security`, and `performance` run on
-every changed file, and `devops` runs when the diff touches infrastructure/CI
-files (Dockerfiles, Compose, Terraform, GitHub Actions, Ansible, Kubernetes,
-CDK, …). See `references/review-lenses.md` for each lens's checklist.
+`loupe` ships five built-in lenses, defined in the skill's own
+`rules/default.yaml`: `correctness`, `security`, `performance`, and
+`maintainability` run on every changed file, and `devops` runs when the diff
+touches infrastructure/CI files (Dockerfiles, Compose, Terraform, GitHub
+Actions, Ansible, Kubernetes, CDK, …). See `references/review-lenses.md` for
+each lens's checklist.
 
 On top of those, `loupe` picks up per-repo custom lenses from an optional
 `REVIEW.yaml` at the root of the repository being reviewed. If the file
@@ -101,6 +113,8 @@ findings use and how matching interacts with the base lenses.
 - Custom-instruction glob matching is O(n²) per `**` segment on non-matching paths; fine for real git paths (~3ms worst case) but pathological multi-`**` patterns on very deep trees could be slow.
 - `parseDiff` does not decode git's quoted paths (`core.quotePath`), so changed files with spaces or non-ASCII names may be skipped from review.
 - `check-attr` receives all changed paths as CLI args, which could hit `ARG_MAX` on an extremely large diff.
+- The dedup key depends on a finding's line number, which shifts when an earlier fix in the same file adds or removes lines — an unresolved or rejected finding can resurface under a new key on the next iteration (bounded by `--max-iterations`).
+- `--all` reviews every tracked file, so on a large repository it produces a correspondingly large per-lens context; it's most useful on small-to-medium codebases. Glob-scoped lenses (e.g. `devops`) partially bound the cost, since they only run on their matching files.
 
 ## Acknowledgements
 

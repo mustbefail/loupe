@@ -7,9 +7,9 @@ rename, or drop fields.
 
 ## 1. Reviewer finding contract
 
-Every reviewer subagent (one per lens: base `correctness` / `security` /
-`performance`, plus one per matched custom-instruction group — see
-`custom-instructions.md`) MUST return its findings as a single JSON object:
+Every reviewer subagent — one per active base lens (see `review-lenses.md`),
+plus one per matched custom-instruction group (see `custom-instructions.md`)
+— MUST return its findings as a single JSON object:
 
 ```json
 {
@@ -55,9 +55,9 @@ Field rules:
   slug for the same *kind* of issue across findings — the dedup key depends
   on it staying stable.
 - `lens` — the exact lens name the reviewer was invoked as: `correctness`,
-  `security`, `performance` for base lenses, or the custom instruction
-  group's exact `name` string for a custom lens (matches the `lenses` object
-  key from `build-context.mjs`'s output).
+  `security`, `performance`, `maintainability`, `devops` for base lenses, or
+  the custom instruction group's exact `name` string for a custom lens
+  (matches the `lenses` object key from `build-context.mjs`'s output).
 - `comment` — human-readable explanation of what is wrong and why it
   matters. For custom-lens findings, this field carries the citation prefix
   defined in `custom-instructions.md` (`According to custom instructions in
@@ -107,9 +107,16 @@ Consequences worth knowing:
   avoid duplicate reports.
 - The orchestrator checks each fresh key against `state.seen` before
   handing findings to the judge (dropping repeats), and after the judge
-  triages, adds every judged key — whether it landed in `actionable` or
-  `rejected` — to `state.seen`. This is what stops the loop from
-  re-surfacing a finding the judge already rejected as noise.
+  triages, adds every key handed to the judge that iteration — actionable,
+  rejected, or left unclassified (deferred) — to `state.seen`. This is what
+  stops the loop from re-surfacing a finding the judge already rejected as
+  noise, or churning a deferred one under the same key next iteration.
+- The key depends on `new_line`, which shifts whenever a fix earlier in the
+  same file adds or removes lines. An unresolved — or even a rejected —
+  finding lower in the file can therefore come back under a *different*
+  key on the next iteration, since its `new_line` moved. This isn't
+  tracked or reconciled against the old key; it's bounded by the
+  iteration cap like everything else in the loop.
 
 ## 3. Judge output contract
 
@@ -131,9 +138,9 @@ findings — each already carrying the `key` the orchestrator attached in §2
 - `actionable` — the `key` values (§2) of findings that clear the severity
   gate (default: `blocker` and `high`; configurable via `--severity-gate`)
   and that the judge did not reject as noise, duplicate-in-substance, or
-  out of scope. A finding can be severity `blocker`/`high` and still be
-  kept out of `actionable` — by putting it in `rejected` instead — if the
-  judge judges it noise.
+  out of scope. A finding can clear the gate and still be kept out of
+  `actionable` — by putting it in `rejected` instead — if the judge judges
+  it noise.
 - `rejected` — one entry per finding, of any severity, that the judge
   affirmatively decided is noise, a duplicate-in-substance of another
   finding, or out of scope. Each entry echoes that finding's `key` (never a
@@ -142,17 +149,27 @@ findings — each already carrying the `key` the orchestrator attached in §2
   single aggregate `reason` field now lives, one entry per rejected
   finding. A `key` must never appear in both `actionable` and `rejected` —
   the two arrays are disjoint by construction.
+- **The repo overrides.** When the reviewed repo ships its own
+  `REVIEW.yaml` with custom lenses, the judge is given those lenses'
+  `instructions` text alongside the fresh findings (`build-context.mjs`'s
+  `lenses[*].instructions` for `type: "custom"` entries — `SKILL.md` Step 5
+  passes this through; no new field is needed). When a custom lens's
+  documented instructions explicitly permit something a base lens flagged,
+  the judge puts that finding in `rejected` with reason `"repo standard
+  overrides"` rather than `actionable` or leaving it unclassified — a
+  repo's own documented standard takes priority over `loupe`'s built-in
+  checklists.
 - The judge is never required to force every finding into `actionable` or
   `rejected`. A finding of any severity may be left out of both arrays;
   that omission is exactly what makes it "Deferred" in the final report
-  (§5). This matters most for `blocker`/`high` findings that the currently
+  (§5). This matters for any finding, of any severity, that the currently
   configured `--severity-gate` excludes from `actionable` — the gate
   excluding a finding is not the judge rejecting it, so the judge MUST NOT
   place a gate-excluded finding into `rejected` just to give it a bucket;
   leaving it unclassified is correct and lands it in Deferred. `rejected`
   is reserved for findings the judge affirmatively judges noise,
   duplicate-in-substance, or out of scope, regardless of severity. A judge
-  may still put a `medium`/`low` finding into `rejected` (e.g. an obvious
+  may still put a below-gate finding into `rejected` (e.g. an obvious
   duplicate), just never into `actionable` unless it both clears the gate
   and isn't rejected.
 - `stop` — `true` if, from the judge's perspective, this pass turned up
@@ -171,6 +188,11 @@ findings — each already carrying the `key` the orchestrator attached in §2
 
 ## 4. Severity → action mapping
 
+**Severity ranks**, highest to lowest: `blocker` (4) > `high` (3) >
+`medium` (2) > `low` (1). A finding "clears the gate" when its rank is ≥
+the gate's rank — every row below, and the judge's `actionable` decision
+(§3), is measured against this comparison.
+
 The judge's `actionable` set only ever contains findings that clear the
 currently configured `--severity-gate` (default: `blocker` and `high`)
 and that the judge did not reject. All four severities still flow into
@@ -178,14 +200,15 @@ the final report:
 
 | Severity | Action |
 |---|---|
-| `blocker`, `high` | Actionable if it clears the current `--severity-gate` and the judge doesn't reject it → dispatched to the executor to fix in the working tree this iteration. Excluded by the gate (e.g. a `high` finding under `--severity-gate blocker`) and not rejected → report's Deferred section — gate exclusion is not a rejection. Rejected by the judge → report's Rejected section, regardless of whether the gate would otherwise have allowed it. |
-| `medium` | Never auto-fixed. Rejected → report's Rejected section. Not rejected → report's Deferred section as a suggestion for a human to apply. |
-| `low` | Report-only, never auto-fixed. Rejected → report's Rejected section. Not rejected → report's Deferred section, informational (no suggestion applied). |
+| `blocker` | Always clears the gate (it's the highest rank). Actionable if the judge doesn't reject it → dispatched to the executor. Rejected by the judge → report's Rejected section. |
+| `high` | Actionable if it clears the current `--severity-gate` (true unless the gate is stricter, but `high` is the highest non-`blocker` rank so this is the common case) and the judge doesn't reject it → dispatched to the executor. Excluded by a stricter gate (i.e. `--severity-gate blocker`) and not rejected → report's Deferred section — gate exclusion is not a rejection. Rejected by the judge → report's Rejected section, regardless of whether the gate would otherwise have allowed it. |
+| `medium` | Actionable — and auto-fixed — exactly when `--severity-gate` is set to `medium` or `low` and the judge doesn't reject it. Excluded by the default (`high`) or a stricter gate, and not rejected → report's Deferred section as a suggestion for a human to apply. Rejected → report's Rejected section regardless of the gate. |
+| `low` | Actionable — and auto-fixed — only when `--severity-gate low` is set and the judge doesn't reject it. Excluded by any stricter gate and not rejected → report's Deferred section, informational (no suggestion rendered even if one is present — see §5). Rejected → report's Rejected section regardless of the gate. |
 
-Any severity, including `blocker`/`high`, can be marked `rejected` by the
-judge (§3) — this overrides the row above: a `blocker`/`high` finding the
-judge rejects is not dispatched to the executor and lands in the report's
-Rejected section (§5), not Fixed.
+Any severity can be marked `rejected` by the judge (§3) — this overrides
+the row above: a finding the judge rejects, whatever its severity or
+whether it would otherwise have cleared the gate, is not dispatched to the
+executor and lands in the report's Rejected section (§5), not Fixed.
 
 ## 5. Final human-facing report
 
@@ -205,11 +228,11 @@ order (first match wins):
    *currently configured* `--severity-gate` and were not rejected) and its
    fix was applied and confirmed by the executor this run.
 3. **Deferred** — everything else. This is the catch-all: findings of any
-   severity (including `blocker`/`high`) that the current `--severity-gate`
-   excludes from `actionable`; `medium`/`low` findings the judge did not
-   reject; and any finding that was `actionable` but whose fix attempt
-   failed, or was never attempted before the loop stopped — reported here
-   as "attempted, unresolved" rather than silently dropped.
+   severity that the current `--severity-gate` excludes from `actionable`
+   and that the judge did not reject; and any finding that was
+   `actionable` but whose fix attempt failed, or was never attempted
+   before the loop stopped — reported here as "attempted, unresolved"
+   rather than silently dropped.
 
 Rejected and Fixed are each pinned to a specific, checkable condition
 (membership in `rejected[]`; membership in `actionable` plus a confirmed
@@ -253,19 +276,19 @@ commit the changes yourself.
   they were judged, dispatched to the executor, and confirmed applied.
   Bullet text is the finding's own `comment` (§1).
 - **Deferred** — the catch-all bucket (§5 rule 3): everything not Rejected
-  and not Fixed. In practice this covers three cases: (1) findings of any
-  severity — including `blocker`/`high` — excluded from `actionable` by
-  the current `--severity-gate`; (2) `medium`/`low` findings the judge did
-  not reject; (3) findings that were `actionable` but never got a
-  confirmed fix before the loop stopped, rendered with a trailing
-  " — attempted, unresolved" instead of a `Suggestion:` line. For cases
-  (1) and (2), render a `suggestion` if the finding carries one as the
+  and not Fixed. In practice this covers two cases: (1) findings of any
+  severity excluded from `actionable` by the current `--severity-gate` and
+  not rejected by the judge; (2) findings that were `actionable` but never
+  got a confirmed fix before the loop stopped, rendered with a trailing
+  " — attempted, unresolved" instead of a `Suggestion:` line. For case
+  (1), render a `suggestion` if the finding carries one as the
   `Suggestion:` line (omit the line entirely when there is none); a
   `low`-severity finding never gets a `Suggestion:` line even if one is
-  present, since it's report-only. Whether the loop may stop while an
-  `actionable` finding is still unresolved is governed by `SKILL.md`
-  (Task 7) — this bucket is only where such a finding is reported if it
-  occurs.
+  present, since a below-gate `low` finding is report-only (a `low`
+  finding is auto-fixed only under `--severity-gate low` — §4). Whether
+  the loop may stop while an `actionable` finding is still unresolved is
+  governed by `SKILL.md`'s Fix step — this bucket is only where such a
+  finding is reported if it occurs.
 - **Rejected** — findings whose `key` is in some iteration's `rejected`
   array (§3), regardless of severity. The `judge: ...` text is that
   specific finding's `rejected[].reason` — not a single reason shared

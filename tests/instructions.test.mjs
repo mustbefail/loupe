@@ -75,12 +75,15 @@ test("loadDisabledLenses reads the disable list from REVIEW.yaml", () => {
 test("loadDefaultLenses loads the bundled base lenses with data-driven routing", () => {
   const defs = loadDefaultLenses()
   const names = defs.map((d) => d.name)
-  for (const n of ["correctness", "security", "performance", "devops"]) assert.ok(names.includes(n), `missing ${n}`)
+  for (const n of ["correctness", "security", "performance", "devops", "maintainability"]) assert.ok(names.includes(n), `missing ${n}`)
   assert.ok(defs.every((d) => d.type === "base"))
   assert.equal(defs.find((d) => d.name === "security").agent, "security-reviewer")
   assert.equal(defs.find((d) => d.name === "correctness").agent, "code-reviewer")
   const devops = defs.find((d) => d.name === "devops")
   assert.ok(devops.include_patterns.length > 0) // glob-scoped, not all-files
+  const maintainability = defs.find((d) => d.name === "maintainability")
+  assert.equal(maintainability.agent, "code-reviewer")
+  assert.equal(maintainability.include_patterns.length, 0) // all-files
 })
 
 const COMMENT_YAML = `instructions:

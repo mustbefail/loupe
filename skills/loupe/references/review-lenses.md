@@ -3,19 +3,19 @@
 `loupe`'s base lenses are defined in `rules/default.yaml` — the same YAML
 schema as a repo's `REVIEW.yaml`, plus an `agent` key (which reviewer subagent
 runs the lens) and a `reference` key (which section here holds its checklist).
-`correctness`, `security`, and `performance` run on every reviewable file each
-iteration; `devops` is a base lens too, but it is glob-scoped to
-infrastructure/CI files and only runs when the diff touches them. Custom lenses
-matched from the reviewed repo's own `REVIEW.yaml` run alongside these (see
-`custom-instructions.md`); to drop a base lens, a repo lists it under
-`disableDefaultLenses` in its `REVIEW.yaml`.
+`correctness`, `security`, `performance`, and `maintainability` run on every
+reviewable file each iteration; `devops` is a base lens too, but it is
+glob-scoped to infrastructure/CI files and only runs when the diff touches
+them. Custom lenses matched from the reviewed repo's own `REVIEW.yaml` run
+alongside these (see `custom-instructions.md`); to drop a base lens, a repo
+lists it under `disableDefaultLenses` in its `REVIEW.yaml`.
 
 Each lens object from `build-context.mjs` carries `type` (`"base"` or
 `"custom"`), `agent` (`code-reviewer`, `security-reviewer`, or
 `general-purpose`), and `files` (its matched slice). A lens with no include
-patterns (`correctness`/`security`/`performance`) receives every reviewable
-changed file; a scoped lens (`devops` and most custom lenses) receives only
-its matched files.
+patterns (`correctness`/`security`/`performance`/`maintainability`) receives
+every reviewable changed file; a scoped lens (`devops` and most custom
+lenses) receives only its matched files.
 
 Each checklist below is a distillation of general, widely-agreed code-review
 practice for that concern — not a transcription of any specific tool's
@@ -31,34 +31,51 @@ does not file pure performance findings, and so on — even when an issue
 technically touches more than one concern, file it once, under whichever
 lens is the primary concern, and let the other lenses stay silent on it.
 
+**Report only what tooling can't catch.** If the reviewed repo's own
+linter, formatter, type-checker, or a CI check would already catch a
+violation, don't file it as a `loupe` finding — the value here is in
+judgement calls automated tooling can't make, not in re-deriving what
+`eslint`/`rubocop`/`tsc`/CI already enforces. This applies to every lens,
+not just `maintainability`.
+
 ## `correctness`
 
 Checklist:
 
 - **Logic errors** — off-by-one errors, inverted conditionals, wrong
   operator (`&&` vs `||`, `<` vs `<=`), incorrect boundary handling at the
-  edges of a range or collection.
+  edges of a range or collection. → Fix the operator/boundary and add a
+  test that fails without the fix.
 - **Null/missing-value handling** — does every path that dereferences an
   optional, nullable, or "may not exist" value check for it first? Any new
-  path that can crash on `null`/`nil`/`undefined`/`None`?
+  path that can crash on `null`/`nil`/`undefined`/`None`? → Add the
+  missing check (or narrow the type) before the dereference.
 - **Error handling** — are errors from I/O, network, or parsing caught and
   handled meaningfully (not silently swallowed, not caught with an
-  overly-broad catch-all that hides unrelated failures)?
+  overly-broad catch-all that hides unrelated failures)? → Catch the
+  specific failure mode and handle it, or narrow an overly-broad catch to
+  what it should actually handle.
 - **Concurrency correctness** — shared mutable state written without
   synchronization, time-of-check/time-of-use gaps, async code that assumes
-  an ordering the runtime doesn't guarantee.
+  an ordering the runtime doesn't guarantee. → Add the missing
+  synchronization (lock, atomic, or explicit ordering) or restructure so
+  none is needed.
 - **API/contract adherence** — does the change honor the documented
   behavior and type signature of the functions/interfaces it calls or
   modifies? Does it break a public interface's existing callers without
-  updating them?
+  updating them? → Update every affected caller/implementer, or preserve
+  the original signature and behavior.
 - **Test coverage for new logic** — does new or changed logic have a test
   that would fail if the logic were reverted? Are the realistic edge cases
   (empty input, boundary values, error paths) exercised, not just the happy
-  path?
+  path? → Add a test that fails on the old code and passes on the new.
 - **Resource lifecycle** — are file handles, connections, locks, and timers
-  released on every exit path, including error paths?
+  released on every exit path, including error paths? → Release the
+  resource on every exit path (e.g. `finally`/`defer`/`using`).
 - **Data integrity** — can this change corrupt state, lose data, or leave
-  the system in an inconsistent state if it fails partway through?
+  the system in an inconsistent state if it fails partway through? → Wrap
+  the multi-step change in a transaction, or add compensating rollback
+  logic for a partial failure.
 
 Severity guidance:
 
@@ -78,35 +95,47 @@ Checklist:
 
 - **Injection** — is user-controlled input concatenated into SQL, a shell
   command, HTML/JS, an LDAP query, or a template string without
-  parameterization or escaping?
+  parameterization or escaping? → Parameterize the query/command, or
+  escape for the target context.
 - **Authentication/authorization** — does a new or changed endpoint/action
   verify not just that the caller is authenticated, but that they are
   authorized for *that specific resource* (no missing ownership/tenant
-  check)?
+  check)? → Add the missing per-resource ownership/tenant check.
 - **Secrets handling** — any credentials, API keys, tokens, or connection
   strings hardcoded, logged, or written in cleartext anywhere reachable?
+  → Move the secret to a secret store or env var, and scrub it from code,
+  logs, and history.
 - **Sensitive data exposure** — does the change log, cache, or return PII,
   PHI, payment-card data, or financial account numbers in a response, log
-  line, or error message where it doesn't need to be?
+  line, or error message where it doesn't need to be? → Redact or omit the
+  sensitive field from the log/response/error message.
 - **Input validation** — is externally-supplied data (request bodies, query
   params, uploaded files, environment variables) validated for type, size,
-  and range before use?
+  and range before use? → Validate type, size, and range at the trust
+  boundary before use.
 - **Unsafe deserialization** — any use of unsafe deserialization
   (`eval`, `pickle`, unrestricted YAML loading, etc.) on data that could
-  originate from outside the trust boundary?
+  originate from outside the trust boundary? → Switch to a safe,
+  schema-validated deserializer, or restrict what types can be
+  constructed.
 - **Cryptography** — weak or broken primitives (MD5/SHA-1 for password
   storage, ECB mode, a predictable IV, a non-cryptographic RNG used for a
-  token or session id)?
+  token or session id)? → Replace with a modern, vetted primitive (e.g.
+  bcrypt/Argon2 for passwords, a CSPRNG for tokens).
 - **SSRF / path traversal** — does user input influence a URL, hostname, or
   file path that the server then fetches or opens, without an allowlist or
-  path-containment check?
+  path-containment check? → Allowlist destinations, or resolve and contain
+  the path before use.
 - **Dependency risk** — does the change add a new third-party dependency?
   Flag unmaintained or unusually obscure packages, and flag any dependency
   under a restrictive license (GPL, AGPL, or similar copyleft terms) before
-  it's adopted — this is a policy concern independent of any CVE.
+  it's adopted — this is a policy concern independent of any CVE. → Prefer
+  a maintained, permissively-licensed alternative, or get the license/risk
+  explicitly signed off before it's adopted.
 - **Least privilege** — does new code request or grant broader permissions,
   scopes, or grants (DB privileges, IAM policy, file permissions) than the
-  feature actually needs?
+  feature actually needs? → Narrow the grant to only what the feature
+  needs.
 
 Severity guidance:
 
@@ -126,23 +155,30 @@ Checklist:
 
 - **Algorithmic complexity** — does the change turn a linear operation into
   quadratic-or-worse (nested loops re-scanning the same collection, a
-  linear lookup repeated inside a loop that could use a map/set)?
+  linear lookup repeated inside a loop that could use a map/set)? →
+  Replace the repeated scan with a map/set lookup, or restructure to avoid
+  the nested pass.
 - **N+1 queries** — does new code issue a database or API call inside a
   loop where batching, a join, or eager loading would do one call instead
-  of many?
+  of many? → Batch, join, or eager-load instead of querying per iteration.
 - **Unbounded growth** — does a cache, in-memory list, or buffer grow
-  without an eviction policy or size limit relative to load?
+  without an eviction policy or size limit relative to load? → Add an
+  eviction policy or a size/TTL bound.
 - **Blocking in hot paths** — does the change add synchronous I/O (disk,
   network, DB) to a request path, event loop, or async context where it
-  blocks other concurrent work?
+  blocks other concurrent work? → Move the I/O off the hot path (async,
+  background job, or queue).
 - **Redundant work** — is the same data being recomputed, re-parsed, or
   re-serialized more than once within a request or iteration when it could
-  be computed once and reused?
+  be computed once and reused? → Compute once and cache/reuse the result
+  within the request or iteration.
 - **Memory footprint** — are large objects held in memory longer than
   needed, or loaded wholesale where streaming or pagination would avoid it?
+  → Stream or paginate instead of loading the whole payload into memory.
 - **Concurrency use** — is there a missed opportunity to parallelize
   independent I/O-bound work, or, conversely, newly-added unbounded
-  parallelism with no concurrency limit?
+  parallelism with no concurrency limit? → Parallelize independent I/O, or
+  add a concurrency limit to newly-added unbounded parallelism.
 
 Severity guidance:
 
@@ -160,6 +196,65 @@ Severity guidance:
   and should generally be omitted rather than filed at all unless clearly
   worth a human's attention.
 
+## `maintainability`
+
+Scope: runs on every changed file, like `correctness`/`security`/
+`performance`. Flags design smells — issues with how the code is
+structured and named, not whether it's correct, secure, or fast. Every
+smell below is a labelled heuristic ("possible Feature Envy"), never a
+hard violation, which is why severity here is capped at `medium` (see
+below). Adapted from the classic Fowler smell catalogue (*Refactoring*,
+ch. 3).
+
+Checklist — each smell reads *what it is* → *how to fix it*:
+
+- **Mysterious Name** — a function, variable, or type whose name doesn't
+  reveal what it does or holds. → Rename it; if no honest name comes to
+  mind, the design itself is murky.
+- **Duplicated Code** — the same logic shape appears in more than one
+  place in the diff. → Extract the shared shape into one place and call
+  it from both.
+- **Feature Envy** — a method that reaches into another object's data
+  more than its own. → Move the method onto the data it envies.
+- **Data Clumps** — the same few fields or parameters keep travelling
+  together — a type wanting to be born. → Bundle them into one type and
+  pass that instead.
+- **Primitive Obsession** — a primitive or string standing in for a
+  domain concept that deserves its own type. → Give the concept its own
+  small type.
+- **Repeated Switches** — the same `switch`/`if`-cascade on the same type
+  recurs across the change. → Replace it with polymorphism, or one map
+  both sites share.
+- **Shotgun Surgery** — one logical change forces scattered edits across
+  many files. → Gather what changes together into one module.
+- **Divergent Change** — one file or module is edited for several
+  unrelated reasons. → Split it so each module changes for one reason.
+- **Speculative Generality** — abstraction, parameters, or hooks added
+  for needs the spec doesn't have. → Delete it; inline back until a real
+  need shows up.
+- **Message Chains** — long `a.b().c().d()` navigation the caller
+  shouldn't have to depend on. → Hide the walk behind one method on the
+  first object.
+- **Middle Man** — a class or function that mostly just delegates
+  onward. → Cut it, call the real target directly.
+- **Refused Bequest** — a subclass or implementer that ignores or
+  overrides most of what it inherits. → Drop the inheritance, use
+  composition instead.
+
+Severity guidance:
+
+- **medium** — a clear smell with a straightforward, local remedy.
+- **low** — a weak or debatable instance: small-scope, arguable, or one a
+  reasonable reviewer might let stand.
+- **`blocker`/`high` are never used by this lens.** A design smell is by
+  nature a judgement call, not a hard violation, so this lens's severity
+  ceiling is `medium`. Under the default `--severity-gate high`, nothing
+  from this lens is ever auto-fixed — every finding surfaces in the
+  report's Deferred section as a suggestion (`medium`) or informational
+  note (`low`) for a human to weigh. Lowering `--severity-gate` to
+  `medium` or `low` (`output-format.md` §4) makes `medium` findings from
+  this lens actionable like any other lens's.
+
 ## `devops`
 
 Scope: runs only on infrastructure, CI, container, and deploy files
@@ -174,27 +269,35 @@ Checklist:
   (never a bare `:latest`); minimal, trusted base; multi-stage builds that
   don't copy secrets or build-only tooling into the final image; a
   `.dockerignore` that keeps `.git`, secrets, and `node_modules` out of the
-  build context.
+  build context. → Pin the tag/digest, add the missing multi-stage split,
+  or add the missing `.dockerignore` entry.
 - **Least privilege in containers** — runs as a non-root user where it can;
   no gratuitous `--privileged`, added capabilities, or host mounts;
-  read-only root filesystem where feasible.
+  read-only root filesystem where feasible. → Add `USER`, drop the
+  capability/mount, or mark the filesystem read-only.
 - **Secrets** — no credentials, tokens, private keys, or connection strings
   committed into Dockerfiles, Compose, CI workflows, or IaC; secrets come
   from a secret store or masked CI variables, never `ENV`/plaintext in the
-  repo.
+  repo. → Move the secret to a secret store or masked CI variable and
+  remove it from the file and its history.
 - **IaC least privilege** — IAM policies, roles, security groups, and bucket
   policies grant only what's needed (no `Action: "*"` / `Resource: "*"`, no
-  `0.0.0.0/0` ingress on sensitive ports); state/backends encrypted.
+  `0.0.0.0/0` ingress on sensitive ports); state/backends encrypted. →
+  Narrow the policy/security-group to only what's needed.
 - **Idempotency & safety** — Ansible tasks declare proper state and are
   idempotent; Terraform changes that destroy or replace stateful resources
-  are intentional and guarded; provider/module versions pinned.
+  are intentional and guarded; provider/module versions pinned. → Add the
+  missing state/guard, or pin the provider/module version.
 - **Reliability** — healthchecks, resource requests/limits, and restart
   policies set where the platform expects them; no obvious new single point
-  of failure.
+  of failure. → Add the healthcheck, resource limits, or restart policy the
+  platform expects.
 - **CI/CD safety** — third-party actions pinned to a commit SHA (not a moving
   tag); no secret echoed to logs; workflows on untrusted triggers (e.g.
   `pull_request_target`) don't run attacker-controlled code with privileged
-  tokens; least-privilege `permissions:` on the workflow/job.
+  tokens; least-privilege `permissions:` on the workflow/job. → Pin the
+  action to a commit SHA, drop the secret echo, or scope down
+  `permissions:`.
 
 Severity guidance:
 

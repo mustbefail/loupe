@@ -1,6 +1,6 @@
 # Custom Instructions
 
-In addition to the three base lenses (`review-lenses.md`), `loupe` picks up
+In addition to the base lenses (`review-lenses.md`), `loupe` picks up
 custom review lenses from the **reviewed repository's own**
 `REVIEW.yaml` (this file lives at the root of the project being reviewed,
 not in `loupe` itself). This document explains where those lenses come
@@ -101,7 +101,7 @@ instructions:
    iteration — the group is silently skipped, not reported as an error.
 5. If `REVIEW.yaml` doesn't exist, or fails to parse,
    `loadCustomInstructions()` returns `[]`: no custom lenses run
-   that iteration, only the three base lenses do. This is not an error
+   that iteration, only the base lenses do. This is not an error
    condition either.
 
 A file can match more than one group's `fileFilters`. When that happens, the
@@ -125,7 +125,7 @@ reviewers must return). Apply **only** this group's instructions to
 - Do not review files outside your `files` list. A file omitted from your
   slice either doesn't match your group's `fileFilters`, or matches a
   different group's — either way it's out of scope for you. (It is still
-  covered by the three base lenses regardless of which custom lenses touch
+  covered by the base lenses regardless of which custom lenses touch
   it.)
 - If the group's `instructions` bundles several directives, treat each as
   a separate thing to check for, but still report findings using the one
@@ -158,18 +158,7 @@ According to custom instructions in 'TypeScript Quality' (no `any` used to silen
 ```
 
 This prefix format is reserved for custom-lens findings. Base-lens findings
-(`correctness`/`security`/`performance`) never use it — the presence or
-absence of this prefix is how the final report (and a human reading it)
-tells a repo-specific rule finding apart from one of `loupe`'s built-in
-checks at a glance.
-
-This citation format is loupe's own convention for labeling individual
-findings — it is not shared with, or ported from, `build-context.mjs`'s
-`formatCustomInstructions()`, which uses different wording (`For files
-matching "<patterns>" (excluding: <patterns>) - <name>:`) to introduce a
-group's instructions block to the reviewer model in the first place. That
-function's output is what a reviewer *reads* to learn the rules; the
-`According to custom instructions in '<name>' (<paraphrase>): <comment>`
-format above is what a reviewer *writes* back, per finding, and the two
-are independent conventions that happen to both reference the group's
-`name`.
+(`correctness`/`security`/`performance`/`maintainability`/`devops`) never
+use it — the presence or absence of this prefix is how the final report
+(and a human reading it) tells a repo-specific rule finding apart from one
+of `loupe`'s built-in checks at a glance.

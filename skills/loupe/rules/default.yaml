@@ -44,6 +44,23 @@ instructions:
       references/review-lenses.md for the full checklist and severity
       calibration, and stay strictly within the performance concern.
 
+  - name: maintainability
+    agent: code-reviewer
+    reference: review-lenses.md#maintainability
+    instructions: |
+      Built-in maintainability lens (applies to every changed file). Flag
+      design smells from the Fowler smell catalogue (Mysterious Name,
+      Duplicated Code, Feature Envy, Data Clumps, Primitive Obsession,
+      Repeated Switches, Shotgun Surgery, Divergent Change, Speculative
+      Generality, Message Chains, Middle Man, Refused Bequest). Read the
+      maintainability section of references/review-lenses.md for the full
+      checklist and severity calibration. Every finding here is a
+      judgement call, never a hard violation: cap severity at `medium` —
+      never report `blocker`/`high` from this lens. Stay strictly within
+      the maintainability concern — leave logic bugs to correctness,
+      security issues to security, and hot-path inefficiency to
+      performance.
+
   - name: devops
     agent: code-reviewer
     reference: review-lenses.md#devops

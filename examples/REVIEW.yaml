@@ -2,9 +2,9 @@
 #
 # Drop this file at the ROOT of the repo you want reviewed. Each entry under
 # `instructions:` becomes its own review lens, layered on top of loupe's
-# built-in lenses (correctness, security, performance, devops). loupe runs a
-# lens only when the current diff touches a file it matches, so scoped lenses
-# cost nothing on unrelated changes.
+# built-in lenses (correctness, security, performance, maintainability,
+# devops). loupe runs a lens only when the current diff touches a file it
+# matches, so scoped lenses cost nothing on unrelated changes.
 #
 # Keys per lens:
 #   name          (required)  Free-text label; also shown in that lens's findings.

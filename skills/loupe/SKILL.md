@@ -1,6 +1,6 @@
 ---
 name: loupe
-description: Headless iterative code review — an ensemble of per-lens reviewer subagents plus a judge, looping review→fix→review until convergence. Use when asked to review the current branch against its base with YAML review rules (REVIEW.yaml).
+description: Headless iterative code review of the current branch's diff against its base, or of the entire repo with --all. Use when the user asks to review changes, review a branch or PR, run a pre-commit review, review the whole codebase/directory, or mentions loupe or REVIEW.yaml.
 ---
 
 # loupe
@@ -12,8 +12,8 @@ what clears the bar — in the working tree only — and the whole thing
 re-diffs and repeats. Looping matters because reviewer models hyperfocus on
 whatever they saw first; changing the code between passes gives the next
 pass a different, better-informed view. The loop stops on convergence, a
-no-progress guard, or an iteration cap — never on a whim, and never with a
-dispatched fix silently lost.
+no-progress guard, or an iteration cap — never with a dispatched fix
+silently lost.
 
 Everything below is written to be run directly, step by step, by the Claude
 session that invoked this skill (the "orchestrator"). It consumes, and must
@@ -36,26 +36,28 @@ Parsed from the skill invocation's argument string. All are optional.
 |---|---|---|
 | `--base <ref>` | the reviewed repo's default branch | The ref to diff against. Passed through to `build-context.mjs --base <ref>` when given; when omitted, let `build-context.mjs`'s own default-branch detection resolve it (see Step 2 — do not reimplement that detection here). |
 | `--max-iterations <n>` | `3` | Hard cap on the number of review→fix passes. |
-| `--fix` / `--no-fix` | `--fix` | Whether Step 7 dispatches the executor. Under `--no-fix`, actionable findings are never attempted and still surface in the final report's Deferred section as "attempted, unresolved" (per `output-format.md` §5 — that phrase covers both "attempted and failed" and "never attempted"). |
-| `--severity-gate <level>` | `high` | The minimum severity a `blocker`/`high` finding must clear to become actionable (see "Severity ranks" under Step 5). Accepts `blocker`\|`high`\|`medium`\|`low`, but per `output-format.md` §4, `medium` and `low` findings are **never** actionable no matter what the gate says — setting the gate to `medium` or `low` has the same practical effect as `high`. |
-| `--committed` | off (review the working tree) | What to diff against `--base`. By default `loupe` reviews the **working tree** — every change not yet in the base, whether committed on the branch or still uncommitted (tracked edits and new untracked files) — so work-in-progress is reviewed and each pass's re-diff sees the edits Step 7 just made. Pass `--committed` to diff the commit range (`mergeBase..HEAD`) instead, reviewing only what has been committed (a PR/MR-style gate). Passed through to `build-context.mjs --committed`. |
+| `--fix` / `--no-fix` | `--fix` | Whether Step 6 dispatches the executor. Under `--no-fix`, actionable findings are never attempted and still surface in the final report's Deferred section as "attempted, unresolved" (per `output-format.md` §5 — that phrase covers both "attempted and failed" and "never attempted"). |
+| `--severity-gate <level>` | `high` | The minimum severity a finding must clear to become actionable (see "Severity ranks" under Step 5). Accepts `blocker`\|`high`\|`medium`\|`low` — a finding is actionable exactly when its severity rank meets or exceeds the gate's rank and the judge doesn't reject it (Step 5/6), so lowering the gate to `medium` or `low` genuinely widens what gets auto-fixed. |
+| `--committed` | off (review the working tree) | What to diff against `--base`. By default `loupe` reviews the **working tree** — every change not yet in the base, whether committed on the branch or still uncommitted (tracked edits and new untracked files) — so work-in-progress is reviewed and each pass's re-diff sees the edits Step 6 just made. Pass `--committed` to diff the commit range (`mergeBase..HEAD`) instead, reviewing only what has been committed (a PR/MR-style gate). Passed through to `build-context.mjs --committed`. |
+| `--all` | off (diff against `--base`) | Review the **entire repository** instead of a diff — for a first look at a codebase with no meaningful base to compare against (e.g. a downloaded skill or a repo someone just handed you). Implemented as a diff against git's empty-tree object, so every tracked file is treated as newly added (`original` is always `null`). Passed through to `build-context.mjs --all`; when given, `--base` is ignored (there's no real base) and Step 2's default-branch detection is skipped. Combine with `--committed` to diff the empty tree only against `HEAD` (skips uncommitted/untracked work). **Trust note:** even under `--all`, `loupe` still reads that repo's on-disk `REVIEW.yaml` — its custom-lens `instructions` are passed verbatim to the reviewer and judge subagents, and its `disableDefaultLenses` can switch off `loupe`'s own base lenses — so only run `loupe` on repositories whose `REVIEW.yaml` you trust. |
 
 ## Safety rules (non-negotiable)
 
 - **git-repo only.** Verified in Step 1. Outside a git repo, `loupe` stops
   immediately with a clear message and does nothing else.
 - **Working-tree only, never commit or push, at any point in the loop.**
-  Every fix Step 7 makes is a plain file edit. `loupe` never runs `git
+  Every fix Step 6 makes is a plain file edit. `loupe` never runs `git
   commit`, `git push`, or anything that mutates history or refs. The
   human reviews and commits after `loupe` exits — that decision is never
   automated away.
 - **Cap = 3 iterations by default**, overridable via `--max-iterations`,
-  enforced in Step 6. This is a backstop against a misbehaving judge or a
+  enforced in Step 7. This is a backstop against a misbehaving judge or a
   codebase that never converges — it always fires eventually, no matter
   what the judge says.
-- **Severity gate default = `high`.** `blocker`/`high` findings that clear
-  the gate and aren't rejected get auto-fixed; `medium` is suggestion-only;
-  `low`/nits are report-only. See Step 5/7.
+- **Severity gate default = `high`.** Findings whose severity clears the
+  gate and aren't rejected get auto-fixed. **Below** the gate, nothing is
+  auto-fixed: `medium` is suggestion-only; `low`/nits are report-only. See
+  Step 5/6.
 - **Everything stays local.** `loupe` reads and writes only the working
   tree and its own session-scratchpad state file. The only network egress
   is whatever Claude Code's own subagent calls already make — `loupe`
@@ -91,14 +93,14 @@ Parsed from the skill invocation's argument string. All are optional.
    { "iteration": 0, "seen": [], "findings": [] }
    ```
    `findings` will accumulate one entry per dedup key across the whole run
-   (schema below, Step 4/5/7) — this is what drives the no-progress guard
+   (schema below, Step 4/5/6) — this is what drives the no-progress guard
    and the final report; `seen` is only ever a flat array of keys.
 
 ### Step 2 — Build context
 
 Run:
 ```
-node "${CLAUDE_SKILL_DIR}/scripts/build-context.mjs" [--base <base>] [--committed]
+node "${CLAUDE_SKILL_DIR}/scripts/build-context.mjs" [--base <base>] [--committed] [--all]
 ```
 from inside the reviewed repo (the script defaults `--repo` to
 `process.cwd()`, which is the reviewed repo since that's where this skill
@@ -110,24 +112,34 @@ your environment, substitute the absolute path to this skill's own
 directory. Include `--base <base>` only when
 the user supplied one via the skill's own `--base` argument; otherwise omit
 it and let the script's own default-branch detection run (symbolic-ref to
-`origin/HEAD`, falling back to `main` then `master`) — do not duplicate
-that logic here. On iteration 0, capture the `base` value the script
-returns in its JSON and reuse that **exact** value verbatim as `--base` on
-every later iteration's invocation, so the target can't silently drift
-mid-run if the remote's default-branch pointer changes.
+`origin/HEAD`, falling back to `main` then `master`). On iteration 0,
+capture the `base` value the script returns in its JSON and reuse that
+**exact** value verbatim as `--base` on every later iteration's
+invocation, so the target can't silently drift mid-run if the remote's
+default-branch pointer changes.
+
+Pass `--all` through when the user supplied it via the skill's own `--all`
+argument — it reviews the entire repository (a diff against git's
+empty-tree object) instead of a branch's changes, for a first look at a
+codebase with no meaningful base. Under `--all`, skip the `--base`
+capture-and-pin above entirely: `build-context.mjs` ignores `--base` and
+returns the fixed synthetic `base: "(empty tree)"`, which can't drift, so
+there is nothing to pin across iterations.
 
 Pass `--committed` through to `build-context.mjs` when the user supplied it
 via the skill's own `--committed` argument; otherwise omit it and let the
 script default to reviewing the working tree. Under `--committed` the diff is
-the commit range `mergeBase..HEAD`, so a fix Step 7 writes to the working
-tree is **not** visible on the next iteration's re-diff — in that mode the
-loop is effectively a single pass (fixes are left for the human to review and
-commit). In the default working-tree mode, Step 7's fixes *do* show up on the
-re-diff, which is what makes the loop genuinely iterative.
+the commit range `mergeBase..HEAD` (or, combined with `--all`, the empty
+tree `..HEAD`), so a fix Step 6 writes to the working tree is **not** visible
+on the next iteration's re-diff — in that mode the loop is effectively a
+single pass (fixes are left for the human to review and commit). In the
+default working-tree mode, Step 6's fixes *do* show up on the re-diff, which
+is what makes the loop genuinely iterative.
 
-Parse stdout as JSON: `{ base, mergeBase, mode, changedFiles, renamed,
+Parse stdout as JSON: `{ base, mergeBase, mode, all, changedFiles, renamed,
 generated, lenses }`. `mode` is `"working-tree"` (default) or `"committed"`
-(under `--committed`) — it records what was diffed.
+(under `--committed`) — it records what was diffed; `all` is `true` under
+`--all`, `false` otherwise.
 
 - If `changedFiles` is empty: print `loupe: nothing to review (no
   reviewable changes between <base> and HEAD)` and stop — skip straight
@@ -135,9 +147,10 @@ generated, lenses }`. `mode` is `"working-tree"` (default) or `"committed"`
   anything to report on).
 - Otherwise, `lenses` is an object keyed by lens name. The base lenses come
   from the skill's bundled `rules/default.yaml` (`correctness`, `security`,
-  `performance` on every changed file; `devops` only when the diff touches
-  infra/CI files), plus one key per matched custom lens from the reviewed
-  repo's own `REVIEW.yaml` (see `references/custom-instructions.md` §2). Each
+  `performance`, and `maintainability` on every changed file; `devops` only
+  when the diff touches infra/CI files), plus one key per matched custom
+  lens from the reviewed repo's own `REVIEW.yaml` (see
+  `references/custom-instructions.md` §2). Each
   value is `{ type: "base"|"custom", agent, reference?, instructions,
   include_patterns?, exclude_patterns?, files: [{ path, diff, original }] }`.
   `agent` names the reviewer subagent to dispatch (Step 3); `reference`, when
@@ -190,29 +203,19 @@ Each reviewer's prompt must be self-contained and include:
    this lens's exact key.
 5. For a `type: "base"` lens: point it at its `reference` (the matching
    section of `references/review-lenses.md` — e.g. that lens's own
-   `#correctness`/`#security`/`#performance`/`#devops` section) for its
-   checklist and severity calibration, and tell it explicitly **not** to use
-   the custom-lens citation prefix.
+   `#correctness`/`#security`/`#performance`/`#maintainability`/`#devops`
+   section) for its checklist and severity calibration, and tell it
+   explicitly **not** to use the custom-lens citation prefix.
 6. The "stay in your lane" rule from `references/review-lenses.md`: report
    only findings squarely within this lens's own concern; don't flag
    something another lens would also flag just because it happens to touch
    both.
-7. The exact required return shape, from `references/output-format.md`
-   §1 — and nothing else in the response:
-   ```json
-   { "findings": [ { "file": "...", "old_line": "", "new_line": "42",
-     "severity": "blocker|high|medium|low", "category": "kebab-slug",
-     "lens": "<this lens's exact key>", "comment": "...",
-     "suggestion": { "from": "...", "to": "..." } } ] }
-   ```
-   `suggestion` is optional and must be omitted entirely (not `null`) when
-   there's no concrete drop-in replacement. `file` must be the file's
-   `path` field exactly (the current/new path — never an old path from a
-   rename). Exactly one of `old_line`/`new_line` may be `""`; never both.
-   **The reviewer must never include a `key`/`id` field** — dedup keys are
-   computed by the orchestrator, never by a reviewer (see Step 4).
-   `{ "findings": [] }` is a valid, expected clean-pass result, not an
-   error.
+7. Paste the reviewer finding contract from `references/output-format.md`
+   §1 **verbatim** into the prompt, and require the reviewer to return
+   only that JSON object, nothing else in the response. §1 already states
+   every field rule that matters here — including that the reviewer must
+   never include a `key`/`id` field, and that `{ "findings": [] }` is a
+   valid, expected clean-pass result — do not restate or summarize them.
 
 Parse each reviewer's response as JSON matching that shape. If parsing
 fails, or the top-level shape doesn't match, retry that one reviewer once
@@ -275,22 +278,16 @@ Give the judge, self-contained in its prompt:
 - The current diff (or at least a pointer to re-run `build-context.mjs` if
   it needs to see it — but the merged findings plus their `comment`/
   `suggestion` text is normally enough).
-- The currently configured `--severity-gate` value.
-- **Severity ranks**, highest to lowest: `blocker` (4) > `high` (3) >
-  `medium` (2) > `low` (1). A finding "clears the gate" when its rank is
-  ≥ the gate's rank.
-- The exact rules from `references/output-format.md` §3–§4, stated
-  plainly: only `blocker`/`high` findings can ever land in `actionable`,
-  and only when they clear the current gate and the judge doesn't reject
-  them; `medium`/`low` can never be `actionable` no matter the gate.
-  `rejected` is reserved for findings the judge affirmatively judges
-  noise, duplicate-in-substance, or out of scope — **any** severity can be
-  rejected, and a `blocker`/`high` finding the judge rejects goes to
-  `rejected`, not `actionable`, even if it clears the gate. Gate-excluding
-  a `blocker`/`high` finding is **not** a rejection — the judge must leave
-  a gate-excluded finding out of both `actionable` and `rejected` rather
-  than stuffing it into `rejected` to give it a bucket. `actionable` and
-  `rejected` must be disjoint.
+- The currently configured `--severity-gate` value and the severity ranks
+  it's measured against (`references/output-format.md` §4 — do not
+  restate the ranks here).
+- Custom lenses' `instructions` text from the build-context output, if any
+  (`type: "custom"` entries) — needed for the repo-overrides rule
+  (`references/output-format.md` §3).
+- Paste `references/output-format.md` §3–§4 **verbatim** into the judge
+  prompt. The actionable/rejected/gate-exclusion rules, the disjointness
+  requirement, and the repo-overrides rule are all specified there — do
+  not restate, summarize, or reinterpret them here.
 - The required return shape, `references/output-format.md` §3:
   ```json
   {
@@ -304,57 +301,26 @@ Give the judge, self-contained in its prompt:
   looping" — it can be true even alongside a non-empty `actionable`
   (findings about to be fixed this same iteration and expected to be the
   last needed pass), and it says nothing by itself about whether the loop
-  will actually stop (see Step 6 — the orchestrator ANDs it with its own
+  will actually stop (see Step 7 — the orchestrator ANDs it with its own
   guards).
 
 Update `state.findings`: for every key in `rejected[]`, upsert an entry
 with `status: "rejected"`, the reason, and `judgedInIteration: <N>`. For
 every key in `actionable[]`, upsert `status: "actionable"`,
-`judgedInIteration: <N>` (Step 7 will move it to `"fixed"` or
+`judgedInIteration: <N>` (Step 6 will move it to `"fixed"` or
 `"unresolved"`). For every fresh finding whose key landed in **neither**
-array (gate-excluded `blocker`/`high`, or un-rejected `medium`/`low`),
+array (excluded by the gate, or otherwise left unclassified by the judge),
 upsert `status: "deferred"`, `judgedInIteration: <N>`. Then append **every**
-judged key (from both `actionable` and `rejected` — not the deferred ones,
-which weren't judged) to `state.seen`, so a rejected finding never
-resurfaces and a fixed one is never re-reported as new.
+key handed to the judge this iteration — actionable, rejected, and
+deferred (left unclassified) alike — to `state.seen`, so a rejected
+finding never resurfaces, a fixed one is never re-reported as new, and a
+deferred one doesn't churn the judge again under the same key next
+iteration.
 
-### Step 6 — Stop check
-
-This decides only whether iteration `N+1` will run — it is evaluated
-**after** Step 7 has already run for iteration `N` below. Read Step 7 (Fix)
-before Step 6 (Stop check) in execution order even though they're numbered
-6-then-7; the numbering matches the plan's task list, not the runtime
-sequence.
-
-```
-judgeStop   = the judge's `stop` field this iteration (or the synthesized
-              `stop: true` from Step 4 if no judge ran because the fresh
-              set was empty)
-noProgress  = (this iteration's `actionable` was empty)
-              AND (no entry in state.findings has fixedInIteration === N)
-              — the iteration that just completed found nothing new actionable
-              AND fixed nothing in that same iteration.
-atCap       = (N + 1) >= max-iterations
-              — with the default of 3, iterations 0, 1, 2 run and a 4th
-              never starts.
-
-stop = judgeStop OR noProgress OR atCap
-```
-
-**Critical:** `stop` being true here never skips or cancels Step 7 for the
-current iteration `N` — by the time this check runs, Step 7 has already
-attempted every actionable and retry-carried finding for iteration `N`.
-`stop: true` only means "don't start iteration `N+1`." Nothing dispatched
-to the executor this run is ever silently dropped: if the loop ends while
-a finding is still in `status: "unresolved"` (fix attempted and failed, or
-— under `--no-fix` — never attempted), it is reported in the final
-report's Deferred section as "attempted, unresolved" (Step 9,
-`output-format.md` §5), never omitted.
-
-### Step 7 — Fix
+### Step 6 — Fix
 
 Runs once per iteration, immediately after Step 5, for every iteration
-regardless of what Step 6 will decide.
+regardless of what Step 7 (the stop check below) will decide.
 
 ```
 fixQueue = this iteration's judge.actionable
@@ -364,10 +330,11 @@ fixQueue = this iteration's judge.actionable
 If `--no-fix`: skip execution entirely. Every key in `fixQueue` that came
 from `judge.actionable` this iteration gets `status: "unresolved"` (never
 attempted) rather than `"actionable"` left dangling, so Step 9 renders it
-correctly; go straight to Step 6.
+correctly; go straight to Step 7.
 
-Otherwise, for each key in `fixQueue` (severity is always `blocker`/`high`
-by construction — `medium`/`low` never enter `actionable`):
+Otherwise, for each key in `fixQueue` (severity always clears the current
+`--severity-gate` by construction — that's what got it into `actionable`
+in the first place):
 
 1. Dispatch `executor`, `model: sonnet`, with: the finding's `file`,
    `old_line`/`new_line`, `severity`, `category`, `comment`, and
@@ -392,11 +359,41 @@ by construction — `medium`/`low` never enter `actionable`):
    (carried forward) if the loop continues, or is reported as "attempted,
    unresolved" if this was the last iteration.
 
+### Step 7 — Stop check
+
+This decides only whether iteration `N+1` will run — it is evaluated
+after the Fix step (Step 6) has already run for iteration `N`.
+
+```
+judgeStop   = the judge's `stop` field this iteration (or the synthesized
+              `stop: true` from Step 4 if no judge ran because the fresh
+              set was empty)
+noProgress  = (this iteration's `actionable` was empty)
+              AND (no entry in state.findings has fixedInIteration === N)
+              — the iteration that just completed found nothing new actionable
+              AND fixed nothing in that same iteration.
+atCap       = (N + 1) >= max-iterations
+              — with the default of 3, iterations 0, 1, 2 run and a 4th
+              never starts.
+
+stop = judgeStop OR noProgress OR atCap
+```
+
+**Critical:** `stop` being true here never skips or cancels Step 6 for the
+current iteration `N` — by the time this check runs, Step 6 has already
+attempted every actionable and retry-carried finding for iteration `N`.
+`stop: true` only means "don't start iteration `N+1`." Nothing dispatched
+to the executor this run is ever silently dropped: if the loop ends while
+a finding is still in `status: "unresolved"` (fix attempted and failed, or
+— under `--no-fix` — never attempted), it is reported in the final
+report's Deferred section as "attempted, unresolved" (Step 9,
+`output-format.md` §5), never omitted.
+
 ### Step 8 — Loop
 
-If Step 6's `stop` is false: set `state.iteration = N + 1`, persist
+If Step 7's `stop` is false: set `state.iteration = N + 1`, persist
 `state.json`, and go back to Step 2 — the re-diff will pick up whatever
-Step 7 just changed in the working tree, which is the entire point (fixed
+Step 6 just changed in the working tree, which is the entire point (fixed
 code shifts what the next pass's reviewers see).
 
 If `stop` is true: proceed to Step 9. Do not run Step 2 again.
@@ -404,60 +401,20 @@ If `stop` is true: proceed to Step 9. Do not run Step 2 again.
 ### Step 9 — Report
 
 Print the final human-facing report exactly once, built from every entry
-ever written to `state.findings` across all iterations, bucketed per
-`references/output-format.md` §5's priority-ordered, disjoint-and-total
-rule (first match wins):
+ever written to `state.findings` across all iterations. Render it exactly
+per `references/output-format.md` §5 — the three buckets' membership and
+priority rules, the per-severity rendering (the gate-excluded suffix, the
+`Suggestion:` line rules, the pure-deletion locator), and the markdown
+template are all specified there; do not duplicate or reinterpret them
+here.
 
-1. **Rejected** — `status === "rejected"`. Bullet text uses that finding's
-   own rejection reason.
-2. **Fixed** — `status === "fixed"`. Bullet text is the finding's own
-   `comment`.
-3. **Deferred** — everything else (`status === "deferred"` or
-   `"unresolved"`), which is by construction every finding not caught by
-   rule 1 or 2. Render per which of these applies:
-   - `status === "unresolved"` → suffix `— attempted, unresolved`, no
-     `Suggestion:` line.
-   - `status === "deferred"`, severity `blocker`/`high` (gate-excluded) →
-     suffix `` — excluded by `--severity-gate <value>` ``; render a
-     `Suggestion:` line if the finding carries one.
-   - `status === "deferred"`, severity `medium` → render a `Suggestion:`
-     line if the finding carries one; omit the line if it doesn't.
-   - `status === "deferred"`, severity `low` → informational only, never
-     a `Suggestion:` line even if the finding carries one.
+Two things this step must still do, beyond what §5 itself specifies:
 
-For any finding whose `new_line` is `""` (a pure-deletion finding), render
-the locator as the bare path with no trailing colon or line number —
-`` `src/util.ts` `` — never `` `src/util.ts:` ``.
-
-Template (mirrors `references/output-format.md` §5 exactly):
-
-```markdown
-## loupe review report
-
-### Fixed (N)
-- `src/user.ts:42` [high/sql-injection] <comment> — fixed this iteration.
-
-### Deferred (N)
-- `src/order.ts:17` [medium/n-plus-one] <comment>
-  Suggestion: replace `from` with `to`.
-- `src/session.ts:9` [high/missing-null-check] <comment> — excluded by `--severity-gate blocker`.
-- `src/cache.ts:23` [blocker/race-condition] <comment> — attempted, unresolved.
-
-### Rejected (N)
-- `src/util.ts:8` [low/naming] <comment> — judge: <rejected reason>
-
-### Diff
-Run `git diff --stat` (or `git diff`) in the working tree to see everything
-loupe changed this run. Nothing was committed or pushed — review and
-commit the changes yourself.
-```
-
-Actually run `git diff --stat` and include its real output under the
-`### Diff` heading (the template's prose line is a fixed reminder that
-always appears; the stat output is appended below it, not fabricated).
-Nothing in this report is ever invented — a bucket with zero entries still
-prints its `(0)` heading with no bullets under it, so the report's shape
-is stable across runs.
+- Actually run `git diff --stat` and append its real output under the
+  `### Diff` heading (the template's prose line is a fixed reminder that
+  always appears; the stat output is appended below it, not fabricated).
+- A bucket with zero entries still prints its `(0)` heading with no
+  bullets under it, so the report's shape is stable across runs.
 
 ## Agent fallback
 

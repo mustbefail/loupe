@@ -225,11 +225,6 @@ export function loadDisabledLenses(repo, deps = { readFileSync, existsSync }) {
   try { return parseDisabledLenses(deps.readFileSync(file, "utf8")) } catch { return [] }
 }
 
-// Part of the context-formatting API retained for callers/tests, though main()'s
-// per-lens path below doesn't invoke it.
-export const escapeHtml = (s) =>
-  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#x27;")
-
 // Diff line content is passed through raw (not HTML-escaped) because the consumer
 // is an LLM reading tagged context, not a browser.
 export function formatDiffLines(rawDiff) {
@@ -251,18 +246,6 @@ export function formatDiffLines(rawDiff) {
     else { lines.push(`<line type="context" old_line="${lineOld}" new_line="${lineNew}">${line}</line>`); lineOld++; lineNew++ }
   }
   return lines.join("\n")
-}
-
-// Part of the context-formatting API retained for callers/tests, though main()'s
-// per-lens path doesn't invoke it either.
-export function formatCustomInstructions(instructions) {
-  if (!instructions.length) return ""
-  const items = instructions.map((ins) => {
-    const inc = ins.include_patterns.join(", ") || "all files"
-    const exc = ins.exclude_patterns.join(", ") || "none"
-    return `For files matching "${inc}" (excluding: ${exc}) - ${ins.name}:\n${ins.instructions.trim()}\n`
-  }).join("\n")
-  return `<custom_instructions>\nApply these additional review instructions to matching files:\n\n${items}\n</custom_instructions>`
 }
 
 // Builds the per-lens context from a flat list of lens definitions (base first,
@@ -304,13 +287,34 @@ function main() {
   if (gitTry("rev-parse", "--is-inside-work-tree") == null) {
     console.error(`loupe: ${repo} is not a git repository`); process.exit(1)
   }
-  let base = flag("base")
-  if (!base) {
-    const head = gitTry("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
-    base = head ? head.trim().replace("refs/remotes/origin/", "")
-      : (gitTry("rev-parse", "--verify", "main") ? "main" : "master")
+  const all = argv.includes("--all")
+  let base, mergeBase
+  if (all) {
+    // Review the entire repo: diff against the empty tree, so every tracked
+    // file appears as newly added. The oid is computed, never hardcoded —
+    // SHA-256 repos have a different empty-tree oid than SHA-1 ones. There's
+    // no real base ref under --all, so --base (if passed) is ignored and
+    // default-branch detection below is skipped entirely.
+    base = "(empty tree)"
+    mergeBase = git("hash-object", "-t", "tree", "/dev/null").trim()
+  } else {
+    base = flag("base")
+    if (!base) {
+      const head = gitTry("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+      base = head ? head.trim().replace("refs/remotes/origin/", "")
+        : (gitTry("rev-parse", "--verify", "main") ? "main" : "master")
+    }
+    if (gitTry("rev-parse", "--verify", base) == null) {
+      console.error(`loupe: cannot resolve base ref '${base}' (no origin/HEAD, main, or master; pass --base)`)
+      process.exit(1)
+    }
+    const mergeBaseOut = gitTry("merge-base", base, "HEAD")
+    if (mergeBaseOut == null) {
+      console.error(`loupe: no common ancestor between '${base}' and HEAD (pass --base)`)
+      process.exit(1)
+    }
+    mergeBase = mergeBaseOut.trim()
   }
-  const mergeBase = git("merge-base", base, "HEAD").trim()
   // Default: diff mergeBase against the WORKING TREE (committed + uncommitted tracked
   // changes) so work-in-progress is reviewed and the fix loop sees its own edits on the
   // next re-diff. `--committed` restores the commit-range diff (mergeBase..HEAD) for a
@@ -323,14 +327,18 @@ function main() {
     const untracked = (gitTry("ls-files", "--others", "--exclude-standard") ?? "").split("\n").filter(Boolean)
     if (untracked.length) { git("add", "-N", "--", ...untracked); intentToAdd = untracked }
   }
-  const allDiffs = parseDiff(git("diff", "-M", committed ? `${mergeBase}..HEAD` : mergeBase))
-  if (intentToAdd.length) gitTry("reset", "-q", "HEAD", "--", ...intentToAdd)
+  let allDiffs
+  try {
+    allDiffs = parseDiff(git("diff", "-M", committed ? `${mergeBase}..HEAD` : mergeBase))
+  } finally {
+    if (intentToAdd.length) gitTry("reset", "-q", "HEAD", "--", ...intentToAdd)
+  }
   const paths = allDiffs.map((f) => f.path).filter(Boolean)
   const generated = paths.length
     ? parseGeneratedAttrs(gitTry("check-attr", "gitlab-generated", "linguist-generated", "--", ...paths) ?? "")
     : new Set()
   const reviewable = allDiffs.filter((f) => f.diff.trim() && !generated.has(f.path))
-  if (!reviewable.length) { console.log(JSON.stringify({ base, mergeBase, mode: committed ? "committed" : "working-tree", changedFiles: [], renamed: {}, generated: [...generated], lenses: {} })); return }
+  if (!reviewable.length) { console.log(JSON.stringify({ base, mergeBase, mode: committed ? "committed" : "working-tree", all, changedFiles: [], renamed: {}, generated: [...generated], lenses: {} })); return }
 
   const filesContent = {}
   for (const f of reviewable) {
@@ -353,7 +361,7 @@ function main() {
     for (const f of lens.files) f.diff = formatDiffLines(f.diff)
   }
   console.log(JSON.stringify({
-    base, mergeBase, mode: committed ? "committed" : "working-tree",
+    base, mergeBase, mode: committed ? "committed" : "working-tree", all,
     changedFiles: reviewable.map((f) => f.path),
     renamed, generated: [...generated], lenses,
   }))

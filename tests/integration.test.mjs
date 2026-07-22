@@ -9,6 +9,24 @@ import { buildLenses } from "../skills/loupe/scripts/build-context.mjs"
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "skills", "loupe", "scripts", "build-context.mjs")
 
+// Creates a throwaway git repo with identity configured, runs `fn(repo, g)`
+// (`g` runs a git command in that repo), and guarantees cleanup even if `fn`
+// throws. `options.initArgs` extends `git init -q` — e.g. `{ initArgs: ["-b",
+// "trunk"] }` for a custom initial branch name.
+function withTempRepo(options, fn) {
+  if (typeof options === "function") { fn = options; options = {} }
+  const repo = mkdtempSync(join(tmpdir(), "loupe-"))
+  try {
+    const g = (...a) => execFileSync("git", a, { cwd: repo, encoding: "utf8" })
+    g("init", "-q", ...(options.initArgs ?? []))
+    g("config", "user.email", "t@t")
+    g("config", "user.name", "t")
+    return fn(repo, g)
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+  }
+}
+
 test("buildLenses matches files to lens defs and skips zero-match lenses", () => {
   const reviewable = [
     { path: "app/user.rb", oldPath: "app/user.rb", diff: "@@ -1 +1 @@\n+x" },
@@ -41,10 +59,7 @@ test("buildLenses: a later (custom) def overrides a base def of the same name", 
 })
 
 test("CLI: disableDefaultLenses drops base lenses; custom lenses run in addition", () => {
-  const repo = mkdtempSync(join(tmpdir(), "loupe-"))
-  try {
-    const g = (...a) => execFileSync("git", a, { cwd: repo, encoding: "utf8" })
-    g("init", "-q"); g("config", "user.email", "t@t"); g("config", "user.name", "t")
+  withTempRepo((repo, g) => {
     writeFileSync(join(repo, "Dockerfile"), "FROM node:20\n")
     g("add", "."); g("commit", "-qm", "base")
     const b = g("branch", "--show-current").trim()
@@ -70,16 +85,11 @@ test("CLI: disableDefaultLenses drops base lenses; custom lenses run in addition
     assert.ok(keys.includes("DevOps"))         // custom lens runs in addition
     assert.equal(data.lenses.DevOps.type, "custom")
     assert.ok(keys.includes("correctness") && keys.includes("security")) // other base lenses untouched
-  } finally {
-    rmSync(repo, { recursive: true, force: true })
-  }
+  })
 })
 
 test("CLI emits JSON with lenses for a real diff", () => {
-  const repo = mkdtempSync(join(tmpdir(), "loupe-"))
-  try {
-    const g = (...a) => execFileSync("git", a, { cwd: repo, encoding: "utf8" })
-    g("init", "-q"); g("config", "user.email", "t@t"); g("config", "user.name", "t")
+  withTempRepo((repo, g) => {
     writeFileSync(join(repo, "a.rb"), "puts 1\n"); g("add", "."); g("commit", "-qm", "base")
     const initBranch = g("branch", "--show-current").trim()
     g("checkout", "-qb", "feature")
@@ -99,16 +109,44 @@ test("CLI emits JSON with lenses for a real diff", () => {
     assert.ok(data.lenses.correctness.files.some((f) => f.path === "a.rb"))
     assert.ok(data.lenses["Ruby Quality"])
     assert.ok(data.lenses["Ruby Quality"].files.some((f) => f.path === "a.rb"))
-  } finally {
-    rmSync(repo, { recursive: true, force: true })
-  }
+  })
+})
+
+test("CLI: unresolvable base ref exits 1 with a clear error", () => {
+  withTempRepo({ initArgs: ["-b", "trunk"] }, (repo, g) => {
+    writeFileSync(join(repo, "a.rb"), "puts 1\n"); g("add", "."); g("commit", "-qm", "base")
+    assert.throws(
+      () => execFileSync("node", [SCRIPT, "--repo", repo], { encoding: "utf8" }),
+      (err) => {
+        assert.equal(err.status, 1)
+        assert.match(err.stderr, /cannot resolve base ref/)
+        return true
+      },
+    )
+  })
+})
+
+test("--all reviews the entire repo via the empty-tree diff, even with no changes", () => {
+  withTempRepo((repo, g) => {
+    writeFileSync(join(repo, "a.rb"), "puts 1\n")
+    writeFileSync(join(repo, "b.rb"), "puts 2\n")
+    g("add", "."); g("commit", "-qm", "base")
+    const branch = g("branch", "--show-current").trim()
+
+    const noAll = JSON.parse(execFileSync("node", [SCRIPT, "--repo", repo, "--base", branch], { encoding: "utf8" }))
+    assert.deepEqual(noAll.changedFiles, [])
+    assert.equal(noAll.all, false)
+
+    const all = JSON.parse(execFileSync("node", [SCRIPT, "--repo", repo, "--all"], { encoding: "utf8" }))
+    assert.ok(all.changedFiles.includes("a.rb"))
+    assert.ok(all.changedFiles.includes("b.rb"))
+    assert.equal(all.all, true)
+    assert.equal(all.base, "(empty tree)")
+  })
 })
 
 test("default reviews uncommitted (tracked edits + new files); --committed does not", () => {
-  const repo = mkdtempSync(join(tmpdir(), "loupe-"))
-  try {
-    const g = (...a) => execFileSync("git", a, { cwd: repo, encoding: "utf8" })
-    g("init", "-q"); g("config", "user.email", "t@t"); g("config", "user.name", "t")
+  withTempRepo((repo, g) => {
     writeFileSync(join(repo, "committed.rb"), "puts 1\n")
     writeFileSync(join(repo, "wip.rb"), "puts 1\n")
     g("add", "."); g("commit", "-qm", "base")
@@ -133,7 +171,5 @@ test("default reviews uncommitted (tracked edits + new files); --committed does 
 
     // the untracked probe must leave the index untouched (fresh.rb still untracked)
     assert.equal(g("status", "--porcelain", "fresh.rb").trim(), "?? fresh.rb")
-  } finally {
-    rmSync(repo, { recursive: true, force: true })
-  }
+  })
 })
