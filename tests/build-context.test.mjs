@@ -88,7 +88,7 @@ test("detectVerifyCommands defaults to npm and ignores non-whitelisted or blank 
   const fs = fakeFs({ "/repo/package.json": JSON.stringify({ scripts: { test: "node --test", deploy: "./ship.sh" } }) })
   assert.deepEqual(detectVerifyCommands("/repo", {}, fs).commands, ["npm run test"])
   const blank = fakeFs({ "/repo/package.json": JSON.stringify({ scripts: { test: "   " } }) })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, blank), { commands: [], source: "none" })
+  assert.deepEqual(detectVerifyCommands("/repo", {}, blank), { commands: [], source: "none", repoSupplied: false })
 })
 
 test("detectVerifyCommands falls back to Makefile targets when there is no package.json", () => {
@@ -103,23 +103,41 @@ test("detectVerifyCommands lets an explicit REVIEW.yaml verify list win over aut
     "/repo/REVIEW.yaml": "verify:\n  - pnpm -F api test\ninstructions:\n  - name: X\n    instructions: y\n",
     "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }),
   })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, fs), { commands: ["pnpm -F api test"], source: "REVIEW.yaml" })
+  assert.deepEqual(detectVerifyCommands("/repo", {}, fs), { commands: ["pnpm -F api test"], source: "REVIEW.yaml", repoSupplied: true })
 })
 
-test("detectVerifyCommands skips autodetection under --all but still honors an explicit verify list", () => {
+test("detectVerifyCommands resolves nothing the repo supplied under --all, including its own verify: list", () => {
+  // --all targets repositories nobody has vetted. A `verify:` entry is handed to
+  // a shell on the host, not to a reviewing model the way custom-lens
+  // instructions are, so it gets no more trust here than an autodetected script.
   const untrusted = fakeFs({ "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }) })
-  assert.deepEqual(detectVerifyCommands("/repo", { all: true }, untrusted), { commands: [], source: "skipped-under-all" })
-  const explicit = fakeFs({
+  assert.deepEqual(detectVerifyCommands("/repo", { all: true }, untrusted), { commands: [], source: "skipped-under-all", repoSupplied: false })
+  const withReviewYaml = fakeFs({
     "/repo/REVIEW.yaml": "verify:\n  - npm test\n",
     "/repo/package.json": JSON.stringify({ scripts: { lint: "eslint ." } }),
   })
-  assert.deepEqual(detectVerifyCommands("/repo", { all: true }, explicit), { commands: ["npm test"], source: "REVIEW.yaml" })
+  assert.deepEqual(detectVerifyCommands("/repo", { all: true }, withReviewYaml), { commands: [], source: "skipped-under-all", repoSupplied: false })
+})
+
+test("detectVerifyCommands marks every resolved command list as repo-supplied", () => {
+  // The whitelist constrains the script *name*; the body that runs is the
+  // repo's. `repoSupplied` is what the orchestrator's consent gate tests, so
+  // every source that comes off disk must set it.
+  const pkg = fakeFs({ "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }) })
+  assert.equal(detectVerifyCommands("/repo", {}, pkg).repoSupplied, true)
+  const mk = fakeFs({ "/repo/Makefile": "test:\n\tnode --test\n" })
+  assert.equal(detectVerifyCommands("/repo", {}, mk).repoSupplied, true)
+  const review = fakeFs({ "/repo/REVIEW.yaml": "verify:\n  - npm test\n" })
+  assert.equal(detectVerifyCommands("/repo", {}, review).repoSupplied, true)
+  // An opt-out and a no-match resolve to nothing, so there is nothing to consent to.
+  assert.equal(detectVerifyCommands("/repo", {}, fakeFs({ "/repo/REVIEW.yaml": "verify: []\n" })).repoSupplied, true)
+  assert.equal(detectVerifyCommands("/repo", {}, fakeFs({})).repoSupplied, false)
 })
 
 test("detectVerifyCommands returns nothing for a repo with no recognizable commands", () => {
-  assert.deepEqual(detectVerifyCommands("/repo", {}, fakeFs({})), { commands: [], source: "none" })
+  assert.deepEqual(detectVerifyCommands("/repo", {}, fakeFs({})), { commands: [], source: "none", repoSupplied: false })
   const malformed = fakeFs({ "/repo/package.json": "{ not json" })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, malformed), { commands: [], source: "none" })
+  assert.deepEqual(detectVerifyCommands("/repo", {}, malformed), { commands: [], source: "none", repoSupplied: false })
 })
 
 test("detectVerifyCommands treats an empty verify: key as opting out, not as absent", () => {
@@ -129,14 +147,14 @@ test("detectVerifyCommands treats an empty verify: key as opting out, not as abs
     "/repo/REVIEW.yaml": "verify: []\n",
     "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }),
   })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, optedOut), { commands: [], source: "REVIEW.yaml" })
+  assert.deepEqual(detectVerifyCommands("/repo", {}, optedOut), { commands: [], source: "REVIEW.yaml", repoSupplied: true })
 
   // A REVIEW.yaml with no verify: key at all still autodetects.
   const noKey = fakeFs({
     "/repo/REVIEW.yaml": "disableDefaultLenses:\n  - performance\n",
     "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }),
   })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, noKey), { commands: ["npm run test"], source: "package.json" })
+  assert.deepEqual(detectVerifyCommands("/repo", {}, noKey), { commands: ["npm run test"], source: "package.json", repoSupplied: true })
 })
 
 test("detectVerifyCommands reads a verify: list written at zero indent", () => {
@@ -144,5 +162,5 @@ test("detectVerifyCommands reads a verify: list written at zero indent", () => {
     "/repo/REVIEW.yaml": "verify:\n- pnpm -F api test\n- make lint\ninstructions:\n  - name: X\n    instructions: y\n",
     "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }),
   })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, fs), { commands: ["pnpm -F api test", "make lint"], source: "REVIEW.yaml" })
+  assert.deepEqual(detectVerifyCommands("/repo", {}, fs), { commands: ["pnpm -F api test", "make lint"], source: "REVIEW.yaml", repoSupplied: true })
 })

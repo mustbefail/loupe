@@ -39,6 +39,11 @@ disableDefaultLenses:
 # OPTIONAL: with this key absent, loupe autodetects a typecheck/lint/test
 # command from package.json scripts or Makefile targets. Set it when the guess
 # would be wrong — monorepos, a non-standard script name, a scoped test run.
+#
+# These are shell commands, not prompt text, so listing them here REQUESTS a
+# run — it does not authorize one. loupe prints the resolved list and asks the
+# reviewer before the first command executes, and under --all it ignores this
+# key entirely (only the reviewer's own --verify enables the gate there).
 verify:
   - npm run typecheck
   - npm run lint

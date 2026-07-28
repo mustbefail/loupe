@@ -84,8 +84,7 @@ key with an empty list (`verify: []`) opts the repo out of the gate — the key'
 presence is what counts, so that is never mistaken for an absent key and never
 falls back to autodetection. Absent the key entirely, `loupe` autodetects a
 typecheck/lint/test command from the repo's `package.json` scripts or
-`Makefile` targets; set it explicitly when that guess would be wrong, or to
-enable the gate under `--all`, where autodetection is deliberately off:
+`Makefile` targets; set it explicitly when that guess would be wrong:
 
 ```yaml
 verify:
@@ -93,9 +92,18 @@ verify:
   - npm test
 ```
 
-These commands are executed as given, in the reviewed repo, so the same trust
-note that applies to custom-lens `instructions` applies here with teeth: only
-run `loupe` on a repository whose `REVIEW.yaml` you trust.
+Unlike everything else in this file, these are **not** prompt text for a
+reviewing model — they are strings handed to a shell on the reviewer's
+machine. Two consequences follow, and they are the reason `verify:` is not
+governed by the same trust note as custom-lens `instructions`:
+
+- Before the first one runs, `loupe` prints the resolved list and asks the
+  human to authorize it (`SKILL.md` Step 6, the consent gate). Declining
+  continues the run with the gate off. Shipping a `verify:` list is a request,
+  not an authorization.
+- Under `--all` the list is **not resolved at all**. That mode targets
+  repositories nobody has vetted, so no command the repo supplies is a
+  candidate there; only the reviewer's own `--verify` enables the gate.
 
 ## 2. How `build-context.mjs` turns this into lenses
 

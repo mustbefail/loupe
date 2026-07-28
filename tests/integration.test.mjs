@@ -157,10 +157,11 @@ test("CLI emits the resolved verify commands, and suppresses autodetection under
     const data = JSON.parse(execFileSync("node", [SCRIPT, "--base", branch, "--repo", repo], { encoding: "utf8" }))
     assert.equal(data.verify.source, "package.json")
     assert.deepEqual(data.verify.commands, ["npm run typecheck", "npm run test"])
+    assert.equal(data.verify.repoSupplied, true) // gates the orchestrator's consent prompt
 
-    // --all points at repos nobody has vetted, so it must not autodetect a command to run.
+    // --all points at repos nobody has vetted, so nothing the repo supplies is resolved.
     const all = JSON.parse(execFileSync("node", [SCRIPT, "--repo", repo, "--all"], { encoding: "utf8" }))
-    assert.deepEqual(all.verify, { commands: [], source: "skipped-under-all" })
+    assert.deepEqual(all.verify, { commands: [], source: "skipped-under-all", repoSupplied: false })
   })
 })
 

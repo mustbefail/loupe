@@ -71,9 +71,18 @@ anything (a working tree under review is frequently already red — that's not
 
 Commands are autodetected: `typecheck`/`type-check`/`tsc`, `lint`, and `test`
 from `package.json` scripts (respecting the lockfile's package manager), or
-the same target names from a `Makefile`. Only those names, never an arbitrary
-script. Set `verify:` in `REVIEW.yaml` to override the guess, `--verify <cmd>`
-for a one-off, `--no-verify` to switch the gate off.
+the same target names from a `Makefile`. Only those *names* are matched — but
+what each name runs is whatever the repo's own script or target says, so this
+gate executes code the repository controls, including code introduced by the
+very diff you are reviewing, and including uncommitted files. So `loupe`
+**prints the resolved commands and asks before running any of them** the first
+time a fix is about to land. Decline and the run continues as if
+`--no-verify` had been passed, with the declined list recorded in the report.
+
+Set `verify:` in `REVIEW.yaml` to override the guess, `--verify <cmd>` for a
+one-off (yours, so it's disclosed but not queried), `--no-verify` to switch the
+gate off. Nothing is executed until a fix is actually about to be dispatched —
+a review that finds nothing worth fixing runs no repo commands at all.
 
 If a command that passed before now fails, `loupe` hands the failure output to
 one repair attempt. If that doesn't clear it, the finding is reported as
@@ -82,10 +91,12 @@ one repair attempt. If that doesn't clear it, the finding is reported as
 your own uncommitted changes, so undoing a bad fix could take your work with
 it. That call stays yours, same as committing.
 
-Autodetection is deliberately **off under `--all`**, since that mode is for a
-repo nobody has vetted yet — running its `npm test` would execute its code. An
-explicit `verify:` in its `REVIEW.yaml` is still honored there, on the grounds
-that trusting that file is already a decision you made.
+Under `--all`, **nothing the repo supplies is resolved at all** — neither an
+autodetected script nor its own `REVIEW.yaml` `verify:` list. That mode is for
+a repo nobody has vetted yet, and a `verify:` entry is a string handed to a
+shell on your machine, not prompt text handed to a reviewing model the way
+custom-lens instructions are; the two are not the same trust decision. Only
+your own `--verify` enables the gate there.
 
 ## External rules: `REVIEW.yaml`
 

@@ -274,16 +274,25 @@ function hasTopLevelKey(text, key) {
 }
 
 // Resolves the verification commands for a repo. An explicit top-level `verify:`
-// list in REVIEW.yaml always wins; otherwise commands are autodetected from the
-// repo's own package.json scripts or Makefile targets, restricted to
-// VERIFY_GROUPS — loupe never invents a command or runs an arbitrary script name.
+// list in REVIEW.yaml wins over autodetection; otherwise commands are
+// autodetected from the repo's own package.json scripts or Makefile targets,
+// restricted to VERIFY_GROUPS.
 //
-// Autodetection is skipped entirely under `--all`, because that mode exists for
-// repositories nobody has vetted yet ("a codebase someone just handed you") and
-// running such a repo's own test script would execute its code. An explicit
-// `verify:` in its REVIEW.yaml is still honored there: shipping that file is
-// already the same trust decision as its custom-lens instructions.
+// `repoSupplied` is the field that matters for safety, and it is `true` for
+// every source here: the whitelist constrains the script *name*, never the body
+// that actually runs, so `npm run test` executes whatever the reviewed repo
+// wrote, and a `verify:` list is an unfiltered shell string. The orchestrator
+// must disclose these and get consent before running them (SKILL.md Step 6) —
+// this function resolves candidates, it does not authorize them.
+//
+// Nothing the repo supplies is resolved under `--all`, including its own
+// `verify:` list. That mode exists for repositories nobody has vetted ("a
+// codebase someone just handed you"), and a `verify:` entry is handed to a
+// shell on the host, not to a reviewing model the way custom-lens
+// `instructions` are — treating the two as the same trust decision was wrong.
+// Only the caller's own `--verify` enables the gate there.
 export function detectVerifyCommands(repo, { all = false } = {}, deps = { readFileSync, existsSync }) {
+  if (all) return { commands: [], source: "skipped-under-all", repoSupplied: false }
   const review = join(repo, "REVIEW.yaml")
   if (deps.existsSync(review)) {
     let text = "", explicit = []
@@ -291,9 +300,8 @@ export function detectVerifyCommands(repo, { all = false } = {}, deps = { readFi
     // Key presence, not list length, decides. A repo that writes `verify: []`
     // is opting out; falling through to autodetection there would run commands
     // it explicitly declined — the opposite of what it asked for.
-    if (explicit.length || hasTopLevelKey(text, "verify")) return { commands: explicit, source: "REVIEW.yaml" }
+    if (explicit.length || hasTopLevelKey(text, "verify")) return { commands: explicit, source: "REVIEW.yaml", repoSupplied: true }
   }
-  if (all) return { commands: [], source: "skipped-under-all" }
 
   const pkgPath = join(repo, "package.json")
   if (deps.existsSync(pkgPath)) {
@@ -305,7 +313,7 @@ export function detectVerifyCommands(repo, { all = false } = {}, deps = { readFi
       const hit = group.find((n) => typeof scripts[n] === "string" && scripts[n].trim())
       if (hit) commands.push(`${pm} run ${hit}`)
     }
-    if (commands.length) return { commands, source: "package.json" }
+    if (commands.length) return { commands, source: "package.json", repoSupplied: true }
   }
 
   const makefile = ["Makefile", "makefile", "GNUmakefile"].map((f) => join(repo, f)).find((p) => deps.existsSync(p))
@@ -317,9 +325,9 @@ export function detectVerifyCommands(repo, { all = false } = {}, deps = { readFi
       const hit = group.find((n) => targets.has(n))
       if (hit) commands.push(`make ${hit}`)
     }
-    if (commands.length) return { commands, source: "Makefile" }
+    if (commands.length) return { commands, source: "Makefile", repoSupplied: true }
   }
-  return { commands: [], source: "none" }
+  return { commands: [], source: "none", repoSupplied: false }
 }
 
 // Diff line content is passed through raw (not HTML-escaped) because the consumer
