@@ -22,11 +22,27 @@
 # Custom lenses run IN ADDITION to the built-ins. To drop a built-in lens — to
 # remove it, or to replace it with your own differently-named lens — list it
 # under `disableDefaultLenses` (names matched case-insensitively).
+#
+# Two other optional top-level keys: `disableDefaultLenses` and `verify` (the
+# post-fix regression gate). Both are shown below.
 
 # Drop built-in lenses you don't want. Here we turn off the built-in
 # `performance` lens because lens 4 below replaces it with a Node/TS-specific one.
 disableDefaultLenses:
   - performance
+
+# Commands loupe runs after each fix pass to confirm its own fixes didn't break
+# anything (it runs them once before fixing too, so a suite that was already red
+# isn't blamed on loupe). In the order listed, stopping at the first failure
+# loupe itself introduced — put the cheap checks first. Use `verify: []` to opt
+# out of the gate entirely.
+# OPTIONAL: with this key absent, loupe autodetects a typecheck/lint/test
+# command from package.json scripts or Makefile targets. Set it when the guess
+# would be wrong — monorepos, a non-standard script name, a scoped test run.
+verify:
+  - npm run typecheck
+  - npm run lint
+  - npm test
 
 instructions:
   # 1) Repo-wide house style — no fileFilters, so it runs on every changed file.

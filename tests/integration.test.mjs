@@ -145,6 +145,25 @@ test("--all reviews the entire repo via the empty-tree diff, even with no change
   })
 })
 
+test("CLI emits the resolved verify commands, and suppresses autodetection under --all", () => {
+  withTempRepo((repo, g) => {
+    writeFileSync(join(repo, "package.json"), JSON.stringify({ scripts: { typecheck: "tsc --noEmit", test: "node --test" } }))
+    writeFileSync(join(repo, "a.rb"), "puts 1\n")
+    g("add", "."); g("commit", "-qm", "base")
+    const branch = g("branch", "--show-current").trim()
+    g("checkout", "-qb", "feature")
+    writeFileSync(join(repo, "a.rb"), "puts 2\n"); g("commit", "-qam", "change")
+
+    const data = JSON.parse(execFileSync("node", [SCRIPT, "--base", branch, "--repo", repo], { encoding: "utf8" }))
+    assert.equal(data.verify.source, "package.json")
+    assert.deepEqual(data.verify.commands, ["npm run typecheck", "npm run test"])
+
+    // --all points at repos nobody has vetted, so it must not autodetect a command to run.
+    const all = JSON.parse(execFileSync("node", [SCRIPT, "--repo", repo, "--all"], { encoding: "utf8" }))
+    assert.deepEqual(all.verify, { commands: [], source: "skipped-under-all" })
+  })
+})
+
 test("default reviews uncommitted (tracked edits + new files); --committed does not", () => {
   withTempRepo((repo, g) => {
     writeFileSync(join(repo, "committed.rb"), "puts 1\n")

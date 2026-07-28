@@ -198,19 +198,26 @@ export function loadCustomInstructions(repo, deps = { readFileSync, existsSync }
   return parsed.map((i) => toLensDef(i, "custom"))
 }
 
-// Reads the optional top-level `disableDefaultLenses:` key from REVIEW.yaml —
-// a list of base-lens names the repo wants turned off entirely (block sequence
-// or inline `[a, b]` form). Names are matched case-insensitively in main().
-export function parseDisabledLenses(text) {
+// Reads a top-level `<key>:` list of scalars from REVIEW.yaml — either a block
+// sequence or the inline `[a, b]` form. `key` is always a literal identifier
+// here, so it needs no regex escaping. Block items may sit at any indent,
+// including column 0 (`key:` then `- item`), which is valid YAML.
+export function parseTopLevelList(text, key) {
   const out = []
+  const inlineRe = new RegExp(`^${key}:\\s*\\[(.*)\\]\\s*$`)
+  const blockRe = new RegExp(`^${key}:\\s*$`)
   let inList = false
   for (const raw of text.split("\n")) {
     const line = raw.replace(/\r$/, "")
-    const inline = line.match(/^disableDefaultLenses:\s*\[(.*)\]\s*$/)
+    const inline = line.match(inlineRe)
     if (inline) { for (const p of inline[1].split(",")) { const v = clean(p); if (v) out.push(v) } ; inList = false; continue }
-    if (/^disableDefaultLenses:\s*$/.test(line)) { inList = true; continue }
+    if (blockRe.test(line)) { inList = true; continue }
     if (inList) {
-      const m = line.match(/^\s+-\s*(.+?)\s*$/)
+      // A document separator ends the list — it is not an item. Checked before
+      // the item match because `---` otherwise satisfies it (dash + `--`) now
+      // that items may sit at zero indent.
+      if (line.trim() === "---") { inList = false; continue }
+      const m = line.match(/^\s*-\s*(.+?)\s*$/)
       if (m) { out.push(clean(m[1])); continue }
       if (line.trim() === "" || line.trim().startsWith("#")) continue
       inList = false
@@ -219,10 +226,100 @@ export function parseDisabledLenses(text) {
   return out
 }
 
+// The optional top-level `disableDefaultLenses:` key: base-lens names the repo
+// wants turned off entirely. Names are matched case-insensitively in main().
+export function parseDisabledLenses(text) {
+  return parseTopLevelList(text, "disableDefaultLenses")
+}
+
+// The optional top-level `verify:` key: shell commands loupe runs after a fix
+// pass to catch regressions its own fixes introduced (SKILL.md Step 6.5).
+export function parseVerifyCommands(text) {
+  return parseTopLevelList(text, "verify")
+}
+
 export function loadDisabledLenses(repo, deps = { readFileSync, existsSync }) {
   const file = join(repo, "REVIEW.yaml")
   if (!deps.existsSync(file)) return []
   try { return parseDisabledLenses(deps.readFileSync(file, "utf8")) } catch { return [] }
+}
+
+// Verification command groups, ordered cheapest-and-most-local first so the
+// orchestrator's fail-fast run surfaces a type error before spending a full test
+// suite on it. At most one command is taken per group (the first name present).
+const VERIFY_GROUPS = [["typecheck", "type-check", "tsc"], ["lint"], ["test"]]
+
+function detectPackageManager(repo, deps) {
+  const locks = [["pnpm-lock.yaml", "pnpm"], ["yarn.lock", "yarn"], ["bun.lockb", "bun"], ["bun.lock", "bun"]]
+  for (const [file, pm] of locks) if (deps.existsSync(join(repo, file))) return pm
+  return "npm"
+}
+
+// Collects rule targets from a Makefile: `name:` at column 0, excluding `name:=`
+// style variable assignments. Only whitelisted names are ever used as commands.
+export function parseMakefileTargets(text) {
+  const out = new Set()
+  for (const raw of text.split("\n")) {
+    const m = raw.replace(/\r$/, "").match(/^([A-Za-z0-9_][A-Za-z0-9_.-]*)\s*:(?!=)/)
+    if (m) out.add(m[1])
+  }
+  return out
+}
+
+// True when REVIEW.yaml declares a top-level `verify:` key at all, regardless of
+// what it parses to. An empty list is a deliberate "do not verify" and must not
+// be mistaken for an absent key, which is what enables autodetection.
+function hasTopLevelKey(text, key) {
+  return new RegExp(`^${key}:`, "m").test(text)
+}
+
+// Resolves the verification commands for a repo. An explicit top-level `verify:`
+// list in REVIEW.yaml always wins; otherwise commands are autodetected from the
+// repo's own package.json scripts or Makefile targets, restricted to
+// VERIFY_GROUPS — loupe never invents a command or runs an arbitrary script name.
+//
+// Autodetection is skipped entirely under `--all`, because that mode exists for
+// repositories nobody has vetted yet ("a codebase someone just handed you") and
+// running such a repo's own test script would execute its code. An explicit
+// `verify:` in its REVIEW.yaml is still honored there: shipping that file is
+// already the same trust decision as its custom-lens instructions.
+export function detectVerifyCommands(repo, { all = false } = {}, deps = { readFileSync, existsSync }) {
+  const review = join(repo, "REVIEW.yaml")
+  if (deps.existsSync(review)) {
+    let text = "", explicit = []
+    try { text = deps.readFileSync(review, "utf8"); explicit = parseVerifyCommands(text) } catch { text = ""; explicit = [] }
+    // Key presence, not list length, decides. A repo that writes `verify: []`
+    // is opting out; falling through to autodetection there would run commands
+    // it explicitly declined — the opposite of what it asked for.
+    if (explicit.length || hasTopLevelKey(text, "verify")) return { commands: explicit, source: "REVIEW.yaml" }
+  }
+  if (all) return { commands: [], source: "skipped-under-all" }
+
+  const pkgPath = join(repo, "package.json")
+  if (deps.existsSync(pkgPath)) {
+    let scripts = {}
+    try { scripts = JSON.parse(deps.readFileSync(pkgPath, "utf8")).scripts ?? {} } catch { scripts = {} }
+    const pm = detectPackageManager(repo, deps)
+    const commands = []
+    for (const group of VERIFY_GROUPS) {
+      const hit = group.find((n) => typeof scripts[n] === "string" && scripts[n].trim())
+      if (hit) commands.push(`${pm} run ${hit}`)
+    }
+    if (commands.length) return { commands, source: "package.json" }
+  }
+
+  const makefile = ["Makefile", "makefile", "GNUmakefile"].map((f) => join(repo, f)).find((p) => deps.existsSync(p))
+  if (makefile) {
+    let targets = new Set()
+    try { targets = parseMakefileTargets(deps.readFileSync(makefile, "utf8")) } catch { targets = new Set() }
+    const commands = []
+    for (const group of VERIFY_GROUPS) {
+      const hit = group.find((n) => targets.has(n))
+      if (hit) commands.push(`make ${hit}`)
+    }
+    if (commands.length) return { commands, source: "Makefile" }
+  }
+  return { commands: [], source: "none" }
 }
 
 // Diff line content is passed through raw (not HTML-escaped) because the consumer
@@ -338,7 +435,10 @@ function main() {
     ? parseGeneratedAttrs(gitTry("check-attr", "gitlab-generated", "linguist-generated", "--", ...paths) ?? "")
     : new Set()
   const reviewable = allDiffs.filter((f) => f.diff.trim() && !generated.has(f.path))
-  if (!reviewable.length) { console.log(JSON.stringify({ base, mergeBase, mode: committed ? "committed" : "working-tree", all, changedFiles: [], renamed: {}, generated: [...generated], lenses: {} })); return }
+  // Resolved on every invocation (cheap, idempotent) so the orchestrator's Step 6.5
+  // never has to detect anything itself; `--all` suppresses autodetection.
+  const verify = detectVerifyCommands(repo, { all })
+  if (!reviewable.length) { console.log(JSON.stringify({ base, mergeBase, mode: committed ? "committed" : "working-tree", all, changedFiles: [], renamed: {}, generated: [...generated], verify, lenses: {} })); return }
 
   const filesContent = {}
   for (const f of reviewable) {
@@ -363,7 +463,7 @@ function main() {
   console.log(JSON.stringify({
     base, mergeBase, mode: committed ? "committed" : "working-tree", all,
     changedFiles: reviewable.map((f) => f.path),
-    renamed, generated: [...generated], lenses,
+    renamed, generated: [...generated], verify, lenses,
   }))
 }
 

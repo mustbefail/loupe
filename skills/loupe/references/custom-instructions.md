@@ -75,6 +75,28 @@ instructions:
   - name: ...
 ```
 
+**Pinning the verification commands.** A third optional top-level key,
+`verify:`, is a list of shell commands `loupe` runs after each fix pass to
+confirm its own fixes didn't break the repo (`SKILL.md` Step 6.5). They run in
+the order given and stop at the first failure `loupe` itself introduced; a
+command that was already red before the run doesn't halt the rest. Writing the
+key with an empty list (`verify: []`) opts the repo out of the gate — the key's
+presence is what counts, so that is never mistaken for an absent key and never
+falls back to autodetection. Absent the key entirely, `loupe` autodetects a
+typecheck/lint/test command from the repo's `package.json` scripts or
+`Makefile` targets; set it explicitly when that guess would be wrong, or to
+enable the gate under `--all`, where autodetection is deliberately off:
+
+```yaml
+verify:
+  - npm run typecheck
+  - npm test
+```
+
+These commands are executed as given, in the reviewed repo, so the same trust
+note that applies to custom-lens `instructions` applies here with teeth: only
+run `loupe` on a repository whose `REVIEW.yaml` you trust.
+
 ## 2. How `build-context.mjs` turns this into lenses
 
 1. `loadCustomInstructions()` parses the YAML and, per group, splits

@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { parseInstructionsYaml, loadCustomInstructions, loadDefaultLenses, parseDisabledLenses, loadDisabledLenses } from "../skills/loupe/scripts/build-context.mjs"
+import { parseInstructionsYaml, loadCustomInstructions, loadDefaultLenses, parseDisabledLenses, loadDisabledLenses, parseVerifyCommands } from "../skills/loupe/scripts/build-context.mjs"
 
 const YAML = `---
 # comment line
@@ -64,6 +64,50 @@ instructions:
   assert.deepEqual(parseDisabledLenses(block), ["devops", "performance"])
   assert.deepEqual(parseDisabledLenses("disableDefaultLenses: [devops, security]\n"), ["devops", "security"])
   assert.deepEqual(parseDisabledLenses("instructions:\n  - name: X\n    instructions: y\n"), [])
+})
+
+test("parseVerifyCommands reads block and inline forms and keeps commands verbatim", () => {
+  const block = `verify:
+  - npm run typecheck
+  - npx tsc --noEmit -p tsconfig.build.json
+instructions:
+  - name: X
+    instructions: |
+      y
+`
+  assert.deepEqual(parseVerifyCommands(block), ["npm run typecheck", "npx tsc --noEmit -p tsconfig.build.json"])
+  assert.deepEqual(parseVerifyCommands('verify: ["npm test", make lint]\n'), ["npm test", "make lint"])
+  assert.deepEqual(parseVerifyCommands("disableDefaultLenses:\n  - performance\n"), [])
+})
+
+test("parseTopLevelList accepts block items at zero indent and stops at the next key", () => {
+  const yaml = `verify:
+- npm test
+- make lint
+disableDefaultLenses:
+- performance
+`
+  assert.deepEqual(parseVerifyCommands(yaml), ["npm test", "make lint"])
+  assert.deepEqual(parseDisabledLenses(yaml), ["performance"])
+})
+
+test("parseTopLevelList treats a document separator as the end of the list, not an item", () => {
+  // `---` satisfies the zero-indent item regex (dash, then `--`), so without an
+  // explicit guard an empty `verify:` followed by a separator yields the command
+  // `--`, which Step 6.5 would then try to run.
+  assert.deepEqual(parseVerifyCommands("verify:\n---\ninstructions:\n  - name: X\n    instructions: y\n"), [])
+  assert.deepEqual(parseDisabledLenses("disableDefaultLenses:\n---\n"), [])
+  assert.deepEqual(parseVerifyCommands("verify:\n- npm test\n---\n- not an item\n"), ["npm test"])
+})
+
+test("parseVerifyCommands and parseDisabledLenses do not bleed into each other", () => {
+  const yaml = `disableDefaultLenses:
+  - performance
+verify:
+  - npm test
+`
+  assert.deepEqual(parseDisabledLenses(yaml), ["performance"])
+  assert.deepEqual(parseVerifyCommands(yaml), ["npm test"])
 })
 
 test("loadDisabledLenses reads the disable list from REVIEW.yaml", () => {

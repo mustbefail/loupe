@@ -225,18 +225,25 @@ order (first match wins):
    reason comes from that finding's `rejected[].reason`.
 2. **Fixed** — not Rejected, and the finding's `key` appeared in some
    iteration's `actionable` array (§3 — findings that cleared the
-   *currently configured* `--severity-gate` and were not rejected) and its
-   fix was applied and confirmed by the executor this run.
+   *currently configured* `--severity-gate` and were not rejected), its
+   fix was applied and confirmed by the executor this run, **and** the
+   verification gate (`SKILL.md` Step 6.5) did not attribute an uncleared
+   regression to it. A fix that landed but left the repo's own
+   typecheck/lint/test failing where it passed before is not "Fixed" — it
+   carries `verifyFailed: true` and falls to Deferred by rule 3.
 3. **Deferred** — everything else. This is the catch-all: findings of any
    severity that the current `--severity-gate` excludes from `actionable`
-   and that the judge did not reject; and any finding that was
-   `actionable` but whose fix attempt failed, or was never attempted
-   before the loop stopped — reported here as "attempted, unresolved"
-   rather than silently dropped.
+   and that the judge did not reject; any finding that was `actionable`
+   but whose fix attempt failed, or was never attempted before the loop
+   stopped — reported here as "attempted, unresolved" rather than silently
+   dropped; and any finding whose fix *did* land but was attributed an
+   uncleared verification regression (`verifyFailed: true`), reported as
+   "applied, verification regressed".
 
 Rejected and Fixed are each pinned to a specific, checkable condition
 (membership in `rejected[]`; membership in `actionable` plus a confirmed
-applied fix), and Deferred is defined as everything that matches neither —
+applied fix with no `verifyFailed` attribution), and Deferred is defined as
+everything that matches neither —
 so the three buckets are disjoint by construction (a finding matching rule
 1 or 2 is by definition excluded from rule 3's "everything else"), and
 total by construction (rule 3 has no membership test to fail, so every
@@ -262,9 +269,18 @@ defines where such a finding is reported if that happens.
   Suggestion: replace `from` with `to`.
 - `src/session.ts:9` [high/missing-null-check] <comment> — excluded by `--severity-gate blocker`.
 - `src/cache.ts:23` [blocker/race-condition] <comment> — attempted, unresolved.
+- `src/auth.ts:31` [high/missing-authz] <comment> — applied, verification regressed.
 
 ### Rejected (N)
 - `src/util.ts:8` [low/naming] <comment> — judge: <rejected[].reason for this key>
+
+### Verification
+Commands (source: package.json): `npm run typecheck`, `npm test`
+- `npm run typecheck` — passed.
+- `npm test` — **REGRESSED**: passed before this run, fails now. Repair attempted, not cleared.
+  ```
+  <last ~120 lines of the real captured output>
+  ```
 
 ### Diff
 Run `git diff --stat` (or `git diff`) in the working tree to see everything
@@ -276,11 +292,18 @@ commit the changes yourself.
   they were judged, dispatched to the executor, and confirmed applied.
   Bullet text is the finding's own `comment` (§1).
 - **Deferred** — the catch-all bucket (§5 rule 3): everything not Rejected
-  and not Fixed. In practice this covers two cases: (1) findings of any
+  and not Fixed. In practice this covers three cases: (1) findings of any
   severity excluded from `actionable` by the current `--severity-gate` and
   not rejected by the judge; (2) findings that were `actionable` but never
   got a confirmed fix before the loop stopped, rendered with a trailing
-  " — attempted, unresolved" instead of a `Suggestion:` line. For case
+  " — attempted, unresolved" instead of a `Suggestion:` line; (3) findings
+  carrying `verifyFailed: true` — the fix landed, but the verification gate
+  attributed an uncleared regression to it and the repair attempt didn't
+  clear it — rendered with a trailing " — applied, verification regressed"
+  instead of a `Suggestion:` line. Case (3)'s edit is still in the working
+  tree (nothing is ever reverted, `SKILL.md` safety rules), so the bullet
+  is telling the human where to look, not what to re-apply; the failing
+  command's output lives in the Verification section below. For case
   (1), render a `suggestion` if the finding carries one as the
   `Suggestion:` line (omit the line entirely when there is none); a
   `low`-severity finding never gets a `Suggestion:` line even if one is
@@ -293,6 +316,33 @@ commit the changes yourself.
   array (§3), regardless of severity. The `judge: ...` text is that
   specific finding's `rejected[].reason` — not a single reason shared
   across the section.
+- **Verification** — always printed, built from `state.verifyBaseline` and
+  the last entry of `state.verifyRuns` (`SKILL.md` Step 1/6.5). Open with
+  the resolved command list and its `source`. Then one bullet per command
+  **in that list** — including any the chain never reached, which get the
+  last verdict below — with exactly one of these verdicts:
+  - `passed.`
+  - `**REGRESSED**: passed before this run, fails now.` — plus whether a
+    repair was attempted and whether it cleared, and the real captured
+    output digest in a fenced block. Never paraphrase, summarize, or
+    reconstruct the digest: the whole value of this section is that it is
+    the tool's own words.
+  - `already failing before this run (pre-existing) — not caused by loupe.`
+    — printed without a repair note, since a pre-existing failure is never
+    repaired. Say plainly that the gate was blind for this command: it
+    cannot detect a regression in something that was already red.
+  - `not run (earlier command failed).` — for commands the chain never
+    reached because an earlier one regressed. A *pre-existing* failure does
+    not stop the chain (`SKILL.md` Step 6.5 item 1), so it never produces
+    this verdict.
+
+  When the gate never ran at all, the section prints a single line stating
+  why, using the resolved `source` (`none` — nothing detected in this repo;
+  `skipped-under-all` — autodetection is off under `--all`; `REVIEW.yaml`
+  with no commands — the repo opted out on purpose; `--no-verify`;
+  or `--no-fix`/no fix attempted, so there was nothing to verify). A
+  skipped gate is reported, never omitted — a report that silently drops it
+  reads as "verified" when nothing was verified.
 - A pure-deletion finding (`new_line: ""`, §1) has no line in the current
   working tree to point at. Render its locator as the bare path with no
   trailing colon or line number — `` `src/util.ts` [low/naming] <comment>

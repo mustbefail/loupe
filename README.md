@@ -33,6 +33,8 @@ sees its own edits on the next re-diff. All arguments are optional:
 --max-iterations <n>    # hard cap on review→fix passes (default: 3)
 --fix | --no-fix        # whether to auto-fix actionable findings (default: --fix)
 --severity-gate <level> # min severity to auto-fix: blocker|high|medium|low (default: high)
+--verify <cmd>          # command that must still pass after a fix pass (default: autodetected)
+--no-verify             # turn the post-fix regression gate off entirely
 ```
 
 Just downloaded or cloned a codebase and want a review of everything in it,
@@ -56,6 +58,34 @@ marketplace instead of the GitHub one:
 ```
 
 Run the test suite with `npm test`.
+
+## Verification: fixes that don't break the build
+
+An auto-fix that silently breaks the typecheck or the test suite is worse than
+no fix. `loupe`'s lenses can't catch that on their own — they're told not to
+report what a linter or type-checker already catches, and they read the diff
+rather than running it. So after each fix pass, `loupe` runs the repo's own
+commands and compares against a baseline it captured *before* touching
+anything (a working tree under review is frequently already red — that's not
+`loupe`'s doing, and it isn't reported as such).
+
+Commands are autodetected: `typecheck`/`type-check`/`tsc`, `lint`, and `test`
+from `package.json` scripts (respecting the lockfile's package manager), or
+the same target names from a `Makefile`. Only those names, never an arbitrary
+script. Set `verify:` in `REVIEW.yaml` to override the guess, `--verify <cmd>`
+for a one-off, `--no-verify` to switch the gate off.
+
+If a command that passed before now fails, `loupe` hands the failure output to
+one repair attempt. If that doesn't clear it, the finding is reported as
+"applied, verification regressed" with the real command output — never as
+"fixed". Nothing is ever reverted: `loupe` works in a tree that usually holds
+your own uncommitted changes, so undoing a bad fix could take your work with
+it. That call stays yours, same as committing.
+
+Autodetection is deliberately **off under `--all`**, since that mode is for a
+repo nobody has vetted yet — running its `npm test` would execute its code. An
+explicit `verify:` in its `REVIEW.yaml` is still honored there, on the grounds
+that trusting that file is already a decision you made.
 
 ## External rules: `REVIEW.yaml`
 
@@ -104,6 +134,19 @@ disableDefaultLenses:
   - performance
 ```
 
+To pin the verification commands instead of letting `loupe` guess them, add a
+top-level `verify:` list. They run in the order given and stop at the first
+failure `loupe` itself introduced; a command that was already red before the
+run doesn't halt the rest, so put the cheap checks first. An empty list
+(`verify: []`) opts out of the gate without turning off autodetection
+elsewhere:
+
+```yaml
+verify:
+  - npm run typecheck
+  - npm test
+```
+
 A fuller, commented example lives in [`examples/REVIEW.yaml`](examples/REVIEW.yaml).
 See `references/custom-instructions.md` for the citation convention custom-lens
 findings use and how matching interacts with the base lenses.
@@ -114,6 +157,8 @@ findings use and how matching interacts with the base lenses.
 - `parseDiff` does not decode git's quoted paths (`core.quotePath`), so changed files with spaces or non-ASCII names may be skipped from review.
 - `check-attr` receives all changed paths as CLI args, which could hit `ARG_MAX` on an extremely large diff.
 - The dedup key depends on a finding's line number, which shifts when an earlier fix in the same file adds or removes lines — an unresolved or rejected finding can resurface under a new key on the next iteration (bounded by `--max-iterations`).
+- The verification gate runs once per iteration, after all of that iteration's fixes, so when several fixes land together a regression can only be attributed to a specific one if the failure output names its file. When it names none, the regression is still reported in full, just not pinned to a finding — a deliberate choice over guessing.
+- A verification command that was already failing before the run makes the gate blind for that command: a regression inside an already-red test suite can't be distinguished from the failure that was there first.
 - `--all` reviews every tracked file, so on a large repository it produces a correspondingly large per-lens context; it's most useful on small-to-medium codebases. Glob-scoped lenses (e.g. `devops`) partially bound the cost, since they only run on their matching files.
 
 ## Acknowledgements
