@@ -161,7 +161,7 @@ test("CLI emits the resolved verify commands, and suppresses autodetection under
 
     // --all points at repos nobody has vetted, so nothing the repo supplies is resolved.
     const all = JSON.parse(execFileSync("node", [SCRIPT, "--repo", repo, "--all"], { encoding: "utf8" }))
-    assert.deepEqual(all.verify, { commands: [], source: "skipped-under-all", repoSupplied: false })
+    assert.deepEqual(all.verify, { commands: [], source: null, skipped: "all-mode", repoSupplied: false })
   })
 })
 

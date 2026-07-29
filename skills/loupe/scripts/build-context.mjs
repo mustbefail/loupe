@@ -245,9 +245,22 @@ export function loadDisabledLenses(repo, deps = { readFileSync, existsSync }) {
 }
 
 // Verification command groups, ordered cheapest-and-most-local first so the
-// orchestrator's fail-fast run surfaces a type error before spending a full test
-// suite on it. At most one command is taken per group (the first name present).
+// orchestrator's run surfaces a type error before spending a full test suite on
+// it. At most one command is taken per group (the first name present).
 const VERIFY_GROUPS = [["typecheck", "type-check", "tsc"], ["lint"], ["test"]]
+
+// The group scan, shared by every autodetection source: `recognizes` decides
+// whether that source offers a given name, `prefix` turns the winning name into
+// a runnable command. Adding a source (Justfile, Cargo, a workspace root) means
+// supplying those two things, not copying the walk.
+function pickVerifyCommands(recognizes, prefix) {
+  const commands = []
+  for (const group of VERIFY_GROUPS) {
+    const hit = group.find(recognizes)
+    if (hit) commands.push(prefix + hit)
+  }
+  return commands
+}
 
 function detectPackageManager(repo, deps) {
   const locks = [["pnpm-lock.yaml", "pnpm"], ["yarn.lock", "yarn"], ["bun.lockb", "bun"], ["bun.lock", "bun"]]
@@ -278,21 +291,37 @@ function hasTopLevelKey(text, key) {
 // autodetected from the repo's own package.json scripts or Makefile targets,
 // restricted to VERIFY_GROUPS.
 //
-// `repoSupplied` is the field that matters for safety, and it is `true` for
-// every source here: the whitelist constrains the script *name*, never the body
-// that actually runs, so `npm run test` executes whatever the reviewed repo
-// wrote, and a `verify:` list is an unfiltered shell string. The orchestrator
-// must disclose these and get consent before running them (SKILL.md Step 6) —
-// this function resolves candidates, it does not authorize them.
+// THE RETURNED SHAPE — this comment is the single definition of these fields'
+// legal values. SKILL.md and output-format.md point here instead of restating
+// them, so the value sets cannot drift between files:
 //
-// Nothing the repo supplies is resolved under `--all`, including its own
-// `verify:` list. That mode exists for repositories nobody has vetted ("a
-// codebase someone just handed you"), and a `verify:` entry is handed to a
-// shell on the host, not to a reviewing model the way custom-lens
-// `instructions` are — treating the two as the same trust decision was wrong.
-// Only the caller's own `--verify` enables the gate there.
+//   commands      Shell command strings, in run order. May be empty.
+//   source        Where the list came from — PROVENANCE ONLY, never a reason:
+//                 "REVIEW.yaml" | "package.json" | "Makefile" | null.
+//                 The orchestrator may substitute an object whose source is
+//                 "--verify" when the caller passed that argument; this
+//                 function never emits that value.
+//   skipped       Why there is nothing to run, or null when there is something:
+//                 "all-mode"     — under --all nothing the repo supplies is
+//                                  resolved at all
+//                 "opted-out"    — the repo wrote a `verify:` key resolving to
+//                                  no commands, i.e. "do not verify"
+//                 "not-detected" — no `verify:` key and no recognized script
+//                 The two are independent: an opt-out has a real provenance
+//                 ("REVIEW.yaml") *and* a skip reason.
+//   repoSupplied  True when the list was read off the reviewed repo's disk. The
+//                 whitelist constrains the script *name*, never the body that
+//                 runs, so `npm run test` executes whatever that repo wrote,
+//                 and a `verify:` entry is an unfiltered shell string. This is
+//                 the flag the orchestrator's consent gate tests: this function
+//                 resolves candidates, it never authorizes them.
+//
+// Nothing the repo supplies is resolved under `--all`, its own `verify:` list
+// included; only the caller's own `--verify` enables the gate there. The
+// rationale for that lives in SKILL.md's safety rules, not here.
 export function detectVerifyCommands(repo, { all = false } = {}, deps = { readFileSync, existsSync }) {
-  if (all) return { commands: [], source: "skipped-under-all", repoSupplied: false }
+  if (all) return { commands: [], source: null, skipped: "all-mode", repoSupplied: false }
+
   const review = join(repo, "REVIEW.yaml")
   if (deps.existsSync(review)) {
     let text = "", explicit = []
@@ -300,7 +329,9 @@ export function detectVerifyCommands(repo, { all = false } = {}, deps = { readFi
     // Key presence, not list length, decides. A repo that writes `verify: []`
     // is opting out; falling through to autodetection there would run commands
     // it explicitly declined — the opposite of what it asked for.
-    if (explicit.length || hasTopLevelKey(text, "verify")) return { commands: explicit, source: "REVIEW.yaml", repoSupplied: true }
+    if (explicit.length || hasTopLevelKey(text, "verify")) {
+      return { commands: explicit, source: "REVIEW.yaml", skipped: explicit.length ? null : "opted-out", repoSupplied: true }
+    }
   }
 
   const pkgPath = join(repo, "package.json")
@@ -308,26 +339,18 @@ export function detectVerifyCommands(repo, { all = false } = {}, deps = { readFi
     let scripts = {}
     try { scripts = JSON.parse(deps.readFileSync(pkgPath, "utf8")).scripts ?? {} } catch { scripts = {} }
     const pm = detectPackageManager(repo, deps)
-    const commands = []
-    for (const group of VERIFY_GROUPS) {
-      const hit = group.find((n) => typeof scripts[n] === "string" && scripts[n].trim())
-      if (hit) commands.push(`${pm} run ${hit}`)
-    }
-    if (commands.length) return { commands, source: "package.json", repoSupplied: true }
+    const commands = pickVerifyCommands((n) => typeof scripts[n] === "string" && Boolean(scripts[n].trim()), `${pm} run `)
+    if (commands.length) return { commands, source: "package.json", skipped: null, repoSupplied: true }
   }
 
   const makefile = ["Makefile", "makefile", "GNUmakefile"].map((f) => join(repo, f)).find((p) => deps.existsSync(p))
   if (makefile) {
     let targets = new Set()
     try { targets = parseMakefileTargets(deps.readFileSync(makefile, "utf8")) } catch { targets = new Set() }
-    const commands = []
-    for (const group of VERIFY_GROUPS) {
-      const hit = group.find((n) => targets.has(n))
-      if (hit) commands.push(`make ${hit}`)
-    }
-    if (commands.length) return { commands, source: "Makefile", repoSupplied: true }
+    const commands = pickVerifyCommands((n) => targets.has(n), "make ")
+    if (commands.length) return { commands, source: "Makefile", skipped: null, repoSupplied: true }
   }
-  return { commands: [], source: "none", repoSupplied: false }
+  return { commands: [], source: null, skipped: "not-detected", repoSupplied: false }
 }
 
 // Diff line content is passed through raw (not HTML-escaped) because the consumer

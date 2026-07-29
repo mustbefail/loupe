@@ -77,7 +77,7 @@ instructions:
 
 **Pinning the verification commands.** A third optional top-level key,
 `verify:`, is a list of shell commands `loupe` runs after each fix pass to
-confirm its own fixes didn't break the repo (`SKILL.md` Step 6.5). They run in
+confirm its own fixes didn't break the repo (`SKILL.md` Step 7). They run in
 the order given and stop at the first failure `loupe` itself introduced; a
 command that was already red before the run doesn't halt the rest. Writing the
 key with an empty list (`verify: []`) opts the repo out of the gate — the key's
@@ -101,9 +101,9 @@ governed by the same trust note as custom-lens `instructions`:
   human to authorize it (`SKILL.md` Step 6, the consent gate). Declining
   continues the run with the gate off. Shipping a `verify:` list is a request,
   not an authorization.
-- Under `--all` the list is **not resolved at all**. That mode targets
-  repositories nobody has vetted, so no command the repo supplies is a
-  candidate there; only the reviewer's own `--verify` enables the gate.
+- Under `--all` the list is **not resolved at all**; only the reviewer's own
+  `--verify` enables the gate there. `SKILL.md`'s verification safety rule
+  carries the reasoning.
 
 ## 2. How `build-context.mjs` turns this into lenses
 

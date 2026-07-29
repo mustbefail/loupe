@@ -43,7 +43,7 @@ disableDefaultLenses:
 # These are shell commands, not prompt text, so listing them here REQUESTS a
 # run — it does not authorize one. loupe prints the resolved list and asks the
 # reviewer before the first command executes, and under --all it ignores this
-# key entirely (only the reviewer's own --verify enables the gate there).
+# key entirely.
 verify:
   - npm run typecheck
   - npm run lint

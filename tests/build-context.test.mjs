@@ -88,7 +88,7 @@ test("detectVerifyCommands defaults to npm and ignores non-whitelisted or blank 
   const fs = fakeFs({ "/repo/package.json": JSON.stringify({ scripts: { test: "node --test", deploy: "./ship.sh" } }) })
   assert.deepEqual(detectVerifyCommands("/repo", {}, fs).commands, ["npm run test"])
   const blank = fakeFs({ "/repo/package.json": JSON.stringify({ scripts: { test: "   " } }) })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, blank), { commands: [], source: "none", repoSupplied: false })
+  assert.deepEqual(detectVerifyCommands("/repo", {}, blank), { commands: [], source: null, skipped: "not-detected", repoSupplied: false })
 })
 
 test("detectVerifyCommands falls back to Makefile targets when there is no package.json", () => {
@@ -103,7 +103,7 @@ test("detectVerifyCommands lets an explicit REVIEW.yaml verify list win over aut
     "/repo/REVIEW.yaml": "verify:\n  - pnpm -F api test\ninstructions:\n  - name: X\n    instructions: y\n",
     "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }),
   })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, fs), { commands: ["pnpm -F api test"], source: "REVIEW.yaml", repoSupplied: true })
+  assert.deepEqual(detectVerifyCommands("/repo", {}, fs), { commands: ["pnpm -F api test"], source: "REVIEW.yaml", skipped: null, repoSupplied: true })
 })
 
 test("detectVerifyCommands resolves nothing the repo supplied under --all, including its own verify: list", () => {
@@ -111,12 +111,12 @@ test("detectVerifyCommands resolves nothing the repo supplied under --all, inclu
   // a shell on the host, not to a reviewing model the way custom-lens
   // instructions are, so it gets no more trust here than an autodetected script.
   const untrusted = fakeFs({ "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }) })
-  assert.deepEqual(detectVerifyCommands("/repo", { all: true }, untrusted), { commands: [], source: "skipped-under-all", repoSupplied: false })
+  assert.deepEqual(detectVerifyCommands("/repo", { all: true }, untrusted), { commands: [], source: null, skipped: "all-mode", repoSupplied: false })
   const withReviewYaml = fakeFs({
     "/repo/REVIEW.yaml": "verify:\n  - npm test\n",
     "/repo/package.json": JSON.stringify({ scripts: { lint: "eslint ." } }),
   })
-  assert.deepEqual(detectVerifyCommands("/repo", { all: true }, withReviewYaml), { commands: [], source: "skipped-under-all", repoSupplied: false })
+  assert.deepEqual(detectVerifyCommands("/repo", { all: true }, withReviewYaml), { commands: [], source: null, skipped: "all-mode", repoSupplied: false })
 })
 
 test("detectVerifyCommands marks every resolved command list as repo-supplied", () => {
@@ -135,9 +135,24 @@ test("detectVerifyCommands marks every resolved command list as repo-supplied", 
 })
 
 test("detectVerifyCommands returns nothing for a repo with no recognizable commands", () => {
-  assert.deepEqual(detectVerifyCommands("/repo", {}, fakeFs({})), { commands: [], source: "none", repoSupplied: false })
+  const nothing = { commands: [], source: null, skipped: "not-detected", repoSupplied: false }
+  assert.deepEqual(detectVerifyCommands("/repo", {}, fakeFs({})), nothing)
   const malformed = fakeFs({ "/repo/package.json": "{ not json" })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, malformed), { commands: [], source: "none", repoSupplied: false })
+  assert.deepEqual(detectVerifyCommands("/repo", {}, malformed), nothing)
+})
+
+test("detectVerifyCommands keeps provenance and skip-reason independent", () => {
+  // `source` answers "where did this come from", `skipped` answers "why is there
+  // nothing to run". An opt-out has both: a real provenance and a reason.
+  const optedOut = detectVerifyCommands("/repo", {}, fakeFs({ "/repo/REVIEW.yaml": "verify: []\n" }))
+  assert.equal(optedOut.source, "REVIEW.yaml")
+  assert.equal(optedOut.skipped, "opted-out")
+  const resolved = detectVerifyCommands("/repo", {}, fakeFs({ "/repo/Makefile": "test:\n\tnode --test\n" }))
+  assert.equal(resolved.source, "Makefile")
+  assert.equal(resolved.skipped, null) // something to run, so no reason to give
+  const allMode = detectVerifyCommands("/repo", { all: true }, fakeFs({ "/repo/REVIEW.yaml": "verify:\n  - npm test\n" }))
+  assert.equal(allMode.source, null) // nothing was resolved, so there is no provenance
+  assert.equal(allMode.skipped, "all-mode")
 })
 
 test("detectVerifyCommands treats an empty verify: key as opting out, not as absent", () => {
@@ -147,14 +162,14 @@ test("detectVerifyCommands treats an empty verify: key as opting out, not as abs
     "/repo/REVIEW.yaml": "verify: []\n",
     "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }),
   })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, optedOut), { commands: [], source: "REVIEW.yaml", repoSupplied: true })
+  assert.deepEqual(detectVerifyCommands("/repo", {}, optedOut), { commands: [], source: "REVIEW.yaml", skipped: "opted-out", repoSupplied: true })
 
   // A REVIEW.yaml with no verify: key at all still autodetects.
   const noKey = fakeFs({
     "/repo/REVIEW.yaml": "disableDefaultLenses:\n  - performance\n",
     "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }),
   })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, noKey), { commands: ["npm run test"], source: "package.json", repoSupplied: true })
+  assert.deepEqual(detectVerifyCommands("/repo", {}, noKey), { commands: ["npm run test"], source: "package.json", skipped: null, repoSupplied: true })
 })
 
 test("detectVerifyCommands reads a verify: list written at zero indent", () => {
@@ -162,5 +177,5 @@ test("detectVerifyCommands reads a verify: list written at zero indent", () => {
     "/repo/REVIEW.yaml": "verify:\n- pnpm -F api test\n- make lint\ninstructions:\n  - name: X\n    instructions: y\n",
     "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }),
   })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, fs), { commands: ["pnpm -F api test", "make lint"], source: "REVIEW.yaml", repoSupplied: true })
+  assert.deepEqual(detectVerifyCommands("/repo", {}, fs), { commands: ["pnpm -F api test", "make lint"], source: "REVIEW.yaml", skipped: null, repoSupplied: true })
 })

@@ -227,7 +227,7 @@ order (first match wins):
    iteration's `actionable` array (§3 — findings that cleared the
    *currently configured* `--severity-gate` and were not rejected), its
    fix was applied and confirmed by the executor this run, **and** the
-   verification gate (`SKILL.md` Step 6.5) did not attribute an uncleared
+   verification gate (`SKILL.md` Step 7) did not attribute an uncleared
    regression to it. A fix that landed but left the repo's own
    typecheck/lint/test failing where it passed before is not "Fixed" — it
    carries `verifyFailed: true` and falls to Deferred by rule 3.
@@ -275,11 +275,11 @@ defines where such a finding is reported if that happens.
 - `src/util.ts:8` [low/naming] <comment> — judge: <rejected[].reason for this key>
 
 ### Verification
-Commands (source: package.json): `npm run typecheck`, `npm test`
+Commands (from package.json, authorized by you): `npm run typecheck`, `npm test`
 - `npm run typecheck` — passed.
 - `npm test` — **REGRESSED**: passed before this run, fails now. Repair attempted, not cleared.
   ```
-  <last ~120 lines of the real captured output>
+  <the real captured digest, verbatim but for redaction>
   ```
 
 ### Diff
@@ -318,12 +318,15 @@ commit the changes yourself.
   across the section.
 - **Verification** — always printed, built from `state.verifyBaseline` and
   the last entry of `state.verifyRuns` (`SKILL.md` Step 6/6.5). Open with
-  the resolved command list and its `source`. Then one bullet per command
+  the resolved command list and where it came from. Then one bullet per command
   **in that list** — including any the chain never reached, which get the
   last verdict below — with exactly one of these verdicts:
+  Which verdicts are possible follows from the run's single `outcome` value
+  (`SKILL.md` Step 7 item 1 defines it): switch on that rather than
+  reassembling the state from per-command booleans.
   - `passed.`
-  - `**REGRESSED**: passed before this run, fails now.` — plus whether a
-    repair was attempted and whether it cleared, and the real captured
+  - `**REGRESSED**: passed before this run, fails now.` — plus whether the
+    repair cleared it (`outcome: "repaired"`) or not (`"uncleared"`), and the real captured
     output digest in a fenced block. Never paraphrase, summarize, or
     reconstruct the digest: the whole value of this section is that it is
     the tool's own words. **Redaction is the single permitted edit, and it
@@ -337,24 +340,27 @@ commit the changes yourself.
     persists it to disk.
   - `already failing before this run (pre-existing) — not caused by loupe.`
     — printed without a repair note, since a pre-existing failure is never
-    repaired. Say plainly that the gate was blind for this command: it
-    cannot detect a regression in something that was already red.
+    repaired. Its verdict comes from the baseline: `SKILL.md` Step 7 item
+    1 skips re-running a command the baseline already had red, because doing
+    so cannot change any outcome. Say plainly that the gate was blind for
+    this command: it cannot detect a regression in something already red.
   - `not run (earlier command failed).` — for commands the chain never
     reached because an earlier one regressed. A *pre-existing* failure does
-    not stop the chain (`SKILL.md` Step 6.5 item 1), so it never produces
+    not stop the chain (`SKILL.md` Step 7 item 1), so it never produces
     this verdict.
 
   When the gate never ran at all, the section prints a single line stating
-  why, using the resolved `source` (`none` — nothing detected in this repo;
-  `skipped-under-all` — nothing the repo supplies is resolved under `--all`;
-  `REVIEW.yaml` with no commands — the repo opted out on purpose;
-  `--no-verify`; **the consent gate was declined** (`SKILL.md` Step 6 — the
-  commands came from the reviewed repo and were not authorized, so nothing
-  was executed); or `--no-fix`/no fix attempted, so there was nothing to
-  verify). A skipped gate is reported, never omitted — a report that
-  silently drops it reads as "verified" when nothing was verified. When the
-  gate was declined, print the command list that *would* have run: the human
-  declined it, and the report is where that decision is recorded.
+  why, in the human's terms rather than as a bare enum value. The reason is
+  `verify.skipped` when the command list resolved to nothing (its values are
+  defined alongside the field itself — `SKILL.md` Step 2 says where; do not
+  re-enumerate them here), or one of the three the field does not carry:
+  `--no-verify` was passed; **the consent gate was declined** (`SKILL.md`
+  Step 6 — the commands came from the reviewed repo and were not authorized,
+  so nothing ran); or no fix was attempted, so there was nothing to verify.
+  A skipped gate is reported, never omitted — a report that silently drops
+  it reads as "verified" when nothing was verified. When the gate was
+  declined, print the command list that *would* have run: the human declined
+  it, and the report is where that decision is recorded.
 - A pure-deletion finding (`new_line: ""`, §1) has no line in the current
   working tree to point at. Render its locator as the bare path with no
   trailing colon or line number — `` `src/util.ts` [low/naming] <comment>
