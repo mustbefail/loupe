@@ -91,6 +91,34 @@ test("detectVerifyCommands defaults to npm and ignores non-whitelisted or blank 
   assert.deepEqual(detectVerifyCommands("/repo", {}, blank), { commands: [], source: null, skipped: "not-detected", repoSupplied: false })
 })
 
+test("detectVerifyCommands discloses each whitelisted script's own body plus its pre/post hooks", () => {
+  // A whitelisted *name* says nothing about what it runs; `bodies` is what
+  // lets the consent gate show the human the actual shell, `pre`/`post`
+  // hooks included, since `npm run test` executes those too.
+  const fs = fakeFs({
+    "/repo/package.json": JSON.stringify({
+      scripts: {
+        test: "node --test",
+        pretest: "node ./setup.js",
+        posttest: "node ./teardown.js",
+        lint: "eslint .",
+      },
+    }),
+  })
+  const got = detectVerifyCommands("/repo", {}, fs)
+  assert.deepEqual(got.bodies, {
+    pretest: "node ./setup.js",
+    test: "node --test",
+    posttest: "node ./teardown.js",
+    lint: "eslint .",
+  })
+})
+
+test("detectVerifyCommands omits a pre/post hook from bodies when the repo doesn't define one", () => {
+  const fs = fakeFs({ "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }) })
+  assert.deepEqual(detectVerifyCommands("/repo", {}, fs).bodies, { test: "node --test" })
+})
+
 test("detectVerifyCommands falls back to Makefile targets when there is no package.json", () => {
   const fs = fakeFs({ "/repo/Makefile": "lint:\n\teslint .\ntest:\n\tnode --test\ndeploy:\n\t./ship.sh\n" })
   const got = detectVerifyCommands("/repo", {}, fs)
@@ -169,7 +197,7 @@ test("detectVerifyCommands treats an empty verify: key as opting out, not as abs
     "/repo/REVIEW.yaml": "disableDefaultLenses:\n  - performance\n",
     "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }),
   })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, noKey), { commands: ["npm run test"], source: "package.json", skipped: null, repoSupplied: true })
+  assert.deepEqual(detectVerifyCommands("/repo", {}, noKey), { commands: ["npm run test"], bodies: { test: "node --test" }, source: "package.json", skipped: null, repoSupplied: true })
 })
 
 test("detectVerifyCommands reads a verify: list written at zero indent", () => {

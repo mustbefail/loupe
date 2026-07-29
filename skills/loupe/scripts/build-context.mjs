@@ -250,16 +250,18 @@ export function loadDisabledLenses(repo, deps = { readFileSync, existsSync }) {
 const VERIFY_GROUPS = [["typecheck", "type-check", "tsc"], ["lint"], ["test"]]
 
 // The group scan, shared by every autodetection source: `recognizes` decides
-// whether that source offers a given name, `prefix` turns the winning name into
-// a runnable command. Adding a source (Justfile, Cargo, a workspace root) means
-// supplying those two things, not copying the walk.
-function pickVerifyCommands(recognizes, prefix) {
-  const commands = []
+// whether that source offers a given name. Returns the winning name per group
+// (at most one per group, first name present) — turning a name into a
+// runnable command, and (package.json only) into script bodies for
+// disclosure, is left to the caller. Adding a source (Justfile, Cargo, a
+// workspace root) means supplying `recognizes`, not copying the walk.
+function pickVerifyNames(recognizes) {
+  const names = []
   for (const group of VERIFY_GROUPS) {
     const hit = group.find(recognizes)
-    if (hit) commands.push(prefix + hit)
+    if (hit) names.push(hit)
   }
-  return commands
+  return names
 }
 
 function detectPackageManager(repo, deps) {
@@ -315,6 +317,14 @@ function hasTopLevelKey(text, key) {
 //                 and a `verify:` entry is an unfiltered shell string. This is
 //                 the flag the orchestrator's consent gate tests: this function
 //                 resolves candidates, it never authorizes them.
+//   bodies        Present only when source is "package.json": one entry per
+//                 whitelisted command's own script body, plus its
+//                 `pre<name>`/`post<name>` hooks when the repo defines them —
+//                 `npm run <name>` executes those too, invisibly to the name
+//                 alone. Keyed by script name, e.g. { test: "node --test",
+//                 pretest: "node ./setup.js" }. This is disclosure data for
+//                 the consent gate to print (SKILL.md Step 6) — never a trust
+//                 input; nothing decides anything from it.
 //
 // Nothing the repo supplies is resolved under `--all`, its own `verify:` list
 // included; only the caller's own `--verify` enables the gate there. The
@@ -339,15 +349,25 @@ export function detectVerifyCommands(repo, { all = false } = {}, deps = { readFi
     let scripts = {}
     try { scripts = JSON.parse(deps.readFileSync(pkgPath, "utf8")).scripts ?? {} } catch { scripts = {} }
     const pm = detectPackageManager(repo, deps)
-    const commands = pickVerifyCommands((n) => typeof scripts[n] === "string" && Boolean(scripts[n].trim()), `${pm} run `)
-    if (commands.length) return { commands, source: "package.json", skipped: null, repoSupplied: true }
+    const names = pickVerifyNames((n) => typeof scripts[n] === "string" && Boolean(scripts[n].trim()))
+    const commands = names.map((n) => `${pm} run ${n}`)
+    // Disclosure only (see the shape comment above) — the whitelist predicate
+    // above never inspects `pre`/`post` hooks, but `npm run <n>` runs them
+    // too, so the consent gate needs these bodies to show what actually
+    // executes, not just the whitelisted name.
+    const bodies = Object.fromEntries(
+      names.flatMap((n) => [`pre${n}`, n, `post${n}`]
+        .filter((k) => typeof scripts[k] === "string")
+        .map((k) => [k, scripts[k]])),
+    )
+    if (commands.length) return { commands, bodies, source: "package.json", skipped: null, repoSupplied: true }
   }
 
   const makefile = ["Makefile", "makefile", "GNUmakefile"].map((f) => join(repo, f)).find((p) => deps.existsSync(p))
   if (makefile) {
     let targets = new Set()
     try { targets = parseMakefileTargets(deps.readFileSync(makefile, "utf8")) } catch { targets = new Set() }
-    const commands = pickVerifyCommands((n) => targets.has(n), "make ")
+    const commands = pickVerifyNames((n) => targets.has(n)).map((n) => `make ${n}`)
     if (commands.length) return { commands, source: "Makefile", skipped: null, repoSupplied: true }
   }
   return { commands: [], source: null, skipped: "not-detected", repoSupplied: false }

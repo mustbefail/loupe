@@ -147,7 +147,7 @@ test("--all reviews the entire repo via the empty-tree diff, even with no change
 
 test("CLI emits the resolved verify commands, and suppresses autodetection under --all", () => {
   withTempRepo((repo, g) => {
-    writeFileSync(join(repo, "package.json"), JSON.stringify({ scripts: { typecheck: "tsc --noEmit", test: "node --test" } }))
+    writeFileSync(join(repo, "package.json"), JSON.stringify({ scripts: { typecheck: "tsc --noEmit", test: "node --test", pretest: "node ./setup.js" } }))
     writeFileSync(join(repo, "a.rb"), "puts 1\n")
     g("add", "."); g("commit", "-qm", "base")
     const branch = g("branch", "--show-current").trim()
@@ -158,6 +158,9 @@ test("CLI emits the resolved verify commands, and suppresses autodetection under
     assert.equal(data.verify.source, "package.json")
     assert.deepEqual(data.verify.commands, ["npm run typecheck", "npm run test"])
     assert.equal(data.verify.repoSupplied, true) // gates the orchestrator's consent prompt
+    // `pretest` runs invisibly whenever `npm run test` does; the consent gate
+    // needs its body disclosed, not just the whitelisted `test` name.
+    assert.deepEqual(data.verify.bodies, { typecheck: "tsc --noEmit", test: "node --test", pretest: "node ./setup.js" })
 
     // --all points at repos nobody has vetted, so nothing the repo supplies is resolved.
     const all = JSON.parse(execFileSync("node", [SCRIPT, "--repo", repo, "--all"], { encoding: "utf8" }))
