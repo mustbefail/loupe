@@ -216,17 +216,18 @@ export function loadCustomInstructions(repo, deps = { readFileSync, existsSync }
 // silently resolved to zero items and got reported as an opt-out).
 //
 // A bare block-scalar indicator (`verify: |`, `verify: >`, with an optional
-// chomping/indentation suffix) is recognized as present but never taken as
-// item text — this parser does not support multi-line block scalars here
-// (unlike `parseInstructionsYaml`'s `instructions: |`), so treating the `|`
-// itself as a one-item command would silently hand a shell the literal `|`.
+// chomping/indentation suffix in either order YAML permits — `|2-` or `|-2`
+// are both valid) is recognized as present but never taken as item text —
+// this parser does not support multi-line block scalars here (unlike
+// `parseInstructionsYaml`'s `instructions: |`), so treating the `|` itself
+// as a one-item command would silently hand a shell the literal `|`.
 export function parseTopLevelList(text, key) {
   const out = []
   let present = false
   const inlineRe = new RegExp(`^${key}:\\s*\\[(.*)\\]\\s*$`)
   const blockRe = new RegExp(`^${key}:\\s*$`)
   const scalarRe = new RegExp(`^${key}:\\s*(.+?)\\s*$`)
-  const blockScalarIndicator = /^[|>][+-]?\d*$/
+  const blockScalarIndicator = /^[|>](?:\d+[+-]?|[+-]\d*)?$/
   let inList = false
   for (const raw of text.split("\n")) {
     const line = raw.replace(/\r$/, "")
@@ -246,7 +247,12 @@ export function parseTopLevelList(text, key) {
     const scalar = line.match(scalarRe)
     if (scalar) {
       present = true
-      if (!blockScalarIndicator.test(scalar[1])) { const v = clean(scalar[1]); if (v) out.push(v) }
+      // Test the *cleaned* value, not the raw capture: an inline `# comment`
+      // is only stripped by `clean()`, so a header like `verify: | # comment`
+      // would otherwise miss the indicator check entirely and hand a shell
+      // the literal `|` as if it were a real command.
+      const v = clean(scalar[1])
+      if (!blockScalarIndicator.test(v)) { if (v) out.push(v) }
     }
   }
   return { items: out, present }
@@ -344,6 +350,13 @@ export function parseMakefileTargets(text) {
 //                 pretest: "node ./setup.js" }. This is disclosure data for
 //                 the consent gate to print (SKILL.md Step 6) — never a trust
 //                 input; nothing decides anything from it.
+//   makefile      Present only when source is "Makefile": the resolved file's
+//                 path relative to `repo`, e.g. "GNUmakefile" — one of
+//                 "GNUmakefile" | "makefile" | "Makefile", whichever this repo's
+//                 own resolution order (matching GNU make's) picked. Disclosure
+//                 data: the consent gate must read *this* file's target recipe,
+//                 not assume a name, since a repo can ship more than one and
+//                 `make` only reads the first in that order.
 //
 // Nothing the repo supplies is resolved under `--all`, its own `verify:` list
 // included; only the caller's own `--verify` enables the gate there. The
@@ -387,12 +400,19 @@ export function detectVerifyCommands(repo, { all = false } = {}, deps = { readFi
     if (commands.length) return { commands, bodies, source: "package.json", skipped: null, repoSupplied: true }
   }
 
-  const makefile = ["Makefile", "makefile", "GNUmakefile"].map((f) => join(repo, f)).find((p) => deps.existsSync(p))
+  // Order matters and is load-bearing: this must match GNU make's own resolution
+  // order (GNUmakefile, then makefile, then Makefile). If a repo ships more than
+  // one, `make` reads whichever comes first in *its* order — scanning them in any
+  // other order here can resolve targets from a file `make` will never read,
+  // silently defeating the consent gate that shows a human the resolved file's
+  // recipe before authorizing it (SKILL.md Step 6).
+  const makefileRel = ["GNUmakefile", "makefile", "Makefile"].find((f) => deps.existsSync(join(repo, f)))
+  const makefile = makefileRel ? join(repo, makefileRel) : undefined
   if (makefile) {
     let targets = new Set()
     try { targets = parseMakefileTargets(deps.readFileSync(makefile, "utf8")) } catch { targets = new Set() }
     const commands = pickVerifyNames((n) => targets.has(n)).map((n) => `make ${n}`)
-    if (commands.length) return { commands, source: "Makefile", skipped: null, repoSupplied: true }
+    if (commands.length) return { commands, source: "Makefile", makefile: makefileRel, skipped: null, repoSupplied: true }
   }
   return { commands: [], source: null, skipped: "not-detected", repoSupplied: false }
 }
@@ -449,6 +469,28 @@ export function buildLenses(reviewable, filesContent, lensDefs) {
   return lenses
 }
 
+// THE TOP-LEVEL OUTPUT SHAPE — this comment is the single definition of the
+// JSON object main() prints (both the early-return, no-reviewable-files case
+// and the full path emit the same fields). SKILL.md and output-format.md point
+// here instead of restating it, so the field set cannot drift between files:
+//
+//   base            The ref being diffed against ("(empty tree)" under --all).
+//   mergeBase       The merge-base commit oid actually diffed from.
+//   mode            "working-tree" (default) or "committed" (--committed).
+//   all             Whether --all (whole-repo) mode was used.
+//   changedFiles    Reviewable file paths, post generated-file exclusion.
+//   renamed         { newPath: oldPath } for renamed files.
+//   generated       Paths excluded as generated (linguist/gitlab attributes).
+//   verify          detectVerifyCommands()'s result — see its own comment.
+//   disabledLenses  Base lens names this repo's own REVIEW.yaml
+//                   `disableDefaultLenses:` actually turned off — resolved
+//                   against the real base-lens list, not merely echoing what
+//                   the file requested, so a name that matches no base lens
+//                   doesn't falsely claim one was disabled. Exists so a
+//                   report can disclose that a lens (e.g. "security") never
+//                   ran, rather than reading a report with zero findings
+//                   from it as a clean pass.
+//   lenses          buildLenses()'s result — see its own comment.
 function main() {
   const argv = process.argv.slice(2)
   const flag = (n) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : undefined }
@@ -513,7 +555,16 @@ function main() {
   // Resolved on every invocation (cheap, idempotent) so the orchestrator's Step 7
   // never has to detect anything itself; `--all` suppresses autodetection.
   const verify = detectVerifyCommands(repo, { all })
-  if (!reviewable.length) { console.log(JSON.stringify({ base, mergeBase, mode: committed ? "committed" : "working-tree", all, changedFiles: [], renamed: {}, generated: [...generated], verify, lenses: {} })); return }
+  // Base lenses (bundled default.yaml) the repo disabled via `disableDefaultLenses:`
+  // (case-insensitive). Resolved before the early return below so `disabledLenses`
+  // is still reported when nothing is reviewable — the repo disabled the lens
+  // either way. Filtered against the real base-lens names (not merely echoing
+  // what REVIEW.yaml requested) so a name that matches no base lens doesn't
+  // falsely claim one was disabled.
+  const requestedDisabled = new Set(loadDisabledLenses(repo).map((n) => n.toLowerCase()))
+  const allBaseDefs = loadDefaultLenses()
+  const disabledLenses = allBaseDefs.filter((d) => requestedDisabled.has(d.name.toLowerCase())).map((d) => d.name)
+  if (!reviewable.length) { console.log(JSON.stringify({ base, mergeBase, mode: committed ? "committed" : "working-tree", all, changedFiles: [], renamed: {}, generated: [...generated], verify, disabledLenses, lenses: {} })); return }
 
   const filesContent = {}
   for (const f of reviewable) {
@@ -523,11 +574,9 @@ function main() {
     filesContent[f.oldPath] = content
   }
   const renamed = Object.fromEntries(allDiffs.filter((f) => f.renamed).map((f) => [f.newPath, f.oldPath]))
-  // Base lenses (bundled default.yaml), minus any the repo disabled via
-  // `disableDefaultLenses:` (case-insensitive), then the repo's own REVIEW.yaml.
-  // A same-named custom lens overrides its base counterpart (buildLenses, last wins).
-  const disabled = new Set(loadDisabledLenses(repo).map((n) => n.toLowerCase()))
-  const baseDefs = loadDefaultLenses().filter((d) => !disabled.has(d.name.toLowerCase()))
+  // Then the repo's own REVIEW.yaml — a same-named custom lens overrides its
+  // base counterpart (buildLenses, last wins).
+  const baseDefs = allBaseDefs.filter((d) => !requestedDisabled.has(d.name.toLowerCase()))
   const lensDefs = [...baseDefs, ...loadCustomInstructions(repo)]
 
   // Pre-format the diff for each lens file so subagents receive the tagged form.
@@ -538,7 +587,7 @@ function main() {
   console.log(JSON.stringify({
     base, mergeBase, mode: committed ? "committed" : "working-tree", all,
     changedFiles: reviewable.map((f) => f.path),
-    renamed, generated: [...generated], verify, lenses,
+    renamed, generated: [...generated], verify, disabledLenses, lenses,
   }))
 }
 

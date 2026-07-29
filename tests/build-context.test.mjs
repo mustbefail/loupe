@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { parseDiff, fnmatch, matchesInstruction, parseGeneratedAttrs, parseMakefileTargets, detectVerifyCommands } from "../skills/loupe/scripts/build-context.mjs"
+import { parseDiff, fnmatch, matchesInstruction, parseGeneratedAttrs, parseMakefileTargets, detectVerifyCommands, parseTopLevelList } from "../skills/loupe/scripts/build-context.mjs"
 
 // Minimal fs stand-in keyed by absolute path, so verification detection can be
 // tested without touching a real repo.
@@ -123,7 +123,22 @@ test("detectVerifyCommands falls back to Makefile targets when there is no packa
   const fs = fakeFs({ "/repo/Makefile": "lint:\n\teslint .\ntest:\n\tnode --test\ndeploy:\n\t./ship.sh\n" })
   const got = detectVerifyCommands("/repo", {}, fs)
   assert.equal(got.source, "Makefile")
+  assert.equal(got.makefile, "Makefile")
   assert.deepEqual(got.commands, ["make lint", "make test"])
+})
+
+test("detectVerifyCommands resolves from GNUmakefile when a repo ships more than one makefile", () => {
+  // GNU make itself resolves GNUmakefile, then makefile, then Makefile — reading
+  // them in any other order can pick targets from a file `make` will never read,
+  // which would show the consent gate (SKILL.md Step 6) the wrong recipe.
+  const fs = fakeFs({
+    "/repo/Makefile": "test:\n\techo BENIGN\n",
+    "/repo/GNUmakefile": "test:\n\techo PAYLOAD\n",
+  })
+  const got = detectVerifyCommands("/repo", {}, fs)
+  assert.equal(got.source, "Makefile")
+  assert.equal(got.makefile, "GNUmakefile")
+  assert.deepEqual(got.commands, ["make test"])
 })
 
 test("detectVerifyCommands lets an explicit REVIEW.yaml verify list win over autodetection", () => {
@@ -215,4 +230,19 @@ test("detectVerifyCommands reads a verify: list written at zero indent", () => {
     "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }),
   })
   assert.deepEqual(detectVerifyCommands("/repo", {}, fs), { commands: ["pnpm -F api test", "make lint"], source: "REVIEW.yaml", skipped: null, repoSupplied: true })
+})
+
+test("parseTopLevelList recognizes a block-scalar header even with a trailing inline comment", () => {
+  // The `#` is only stripped by clean(); testing the raw capture let this
+  // header slip past the block-scalar guard and resolve to a literal `|`
+  // reported as a real (and non-empty) command.
+  assert.deepEqual(parseTopLevelList("verify: | # our verification commands\n  npm test\n", "verify"), { items: [], present: true })
+})
+
+test("parseTopLevelList recognizes both chomping/indentation orders of a block-scalar header", () => {
+  // YAML permits the indicator and the chomping/indentation suffix in either
+  // order: `|-2` (chomping then indent) and `|2-` (indent then chomping) are
+  // both valid, and the guard must reject both, not just one.
+  assert.deepEqual(parseTopLevelList("verify: |2-\n  npm test\n", "verify"), { items: [], present: true })
+  assert.deepEqual(parseTopLevelList("verify: |-2\n  npm test\n", "verify"), { items: [], present: true })
 })

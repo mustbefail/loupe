@@ -274,6 +274,11 @@ defines where such a finding is reported if that happens.
 ### Rejected (N)
 - `src/util.ts:8` [low/naming] <comment> — judge: <rejected[].reason for this key>
 
+### Lenses
+Ran: correctness, security, performance, maintainability.
+**Disabled by the reviewed repo's own `REVIEW.yaml`: devops.** Nothing in this
+report speaks for that concern.
+
 ### Verification
 Commands (from package.json, authorized by you): `npm run typecheck`, `npm test`
 - `npm run typecheck` — passed.
@@ -316,6 +321,15 @@ commit the changes yourself.
   array (§3), regardless of severity. The `judge: ...` text is that
   specific finding's `rejected[].reason` — not a single reason shared
   across the section.
+- **Lenses** — always printed, built from `build-context.mjs`'s `lenses` keys
+  and its `disabledLenses` array. Name the lenses that ran, and — whenever
+  `disabledLenses` is non-empty — name every base lens the reviewed repo's own
+  `REVIEW.yaml` switched off, and say that nothing in this report speaks for
+  that concern. This is not bookkeeping: a repo can add one line to its
+  `REVIEW.yaml` to disable the very lens that would have reviewed its
+  `verify:` payload, and without this section the three buckets look identical
+  whether that lens found nothing or never ran. An absent section reads as
+  "all lenses ran", so print it even when nothing was disabled.
 - **Verification** — always printed, built from `state.verifyBaseline` and
   the last entry of `state.verifyRuns` (`SKILL.md` Step 6/7). Open with
   the resolved command list and where it came from. Then one bullet per command
@@ -340,10 +354,23 @@ commit the changes yourself.
     persists it to disk.
   - `already failing before this run (pre-existing) — not caused by loupe.`
     — printed without a repair note, since a pre-existing failure is never
-    repaired. Its verdict comes from the baseline: `SKILL.md` Step 7 item
-    1 skips re-running a command the baseline already had red, because doing
-    so cannot change any outcome. Say plainly that the gate was blind for
-    this command: it cannot detect a regression in something already red.
+    repaired. Read this, like every other bullet in this list, from the
+    **last** `state.verifyRuns` entry's row for the command rather than the
+    baseline directly: `SKILL.md` Step 7 item 1 skips re-running a command
+    the baseline already had red for as long as the loop is still running
+    (re-running it mid-loop cannot change the loop's outcome), but Step 9
+    re-runs every such command exactly once after the loop stops and
+    updates that entry — including recomputing its `outcome` — from the
+    real result, so by the time Step 10 renders, the row already reflects
+    whichever of this verdict or the next one actually happened. Use this
+    verdict only when that final re-run still comes back red; say plainly
+    that the gate was blind for this command until then: it could not
+    detect a regression in something already red.
+  - `already failing before this run (pre-existing); passes now — loupe's
+    own fixes appear to have cleared it.` — the verdict for the same
+    pre-existing command when Step 9's final re-run comes back green.
+    Printing the "not caused by loupe" verdict above for a command in this
+    state would discard the one thing that final re-run exists to find.
   - `not run (earlier command failed).` — for commands the chain never
     reached because an earlier one regressed. A *pre-existing* failure does
     not stop the chain (`SKILL.md` Step 7 item 1), so it never produces
@@ -353,10 +380,11 @@ commit the changes yourself.
   why, in the human's terms rather than as a bare enum value. The reason is
   `verify.skipped` when the command list resolved to nothing (its values are
   defined alongside the field itself — `SKILL.md` Step 2 says where; do not
-  re-enumerate them here), or one of the three the field does not carry:
-  `--no-verify` was passed; **the consent gate was declined** (`SKILL.md`
-  Step 6 — the commands came from the reviewed repo and were not authorized,
-  so nothing ran); or no fix was attempted, so there was nothing to verify.
+  re-enumerate them here), or one of the reasons that field does not
+  carry, which `SKILL.md` Step 7's skip list enumerates once — read them
+  there; do not restate or count them here. When the reason is a declined
+  consent gate, say so in those words: the commands came from the reviewed
+  repo and were not authorized, so nothing ran.
   A skipped gate is reported, never omitted — a report that silently drops
   it reads as "verified" when nothing was verified. When the gate was
   declined, print the command list that *would* have run: the human declined

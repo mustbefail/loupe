@@ -85,6 +85,10 @@ test("CLI: disableDefaultLenses drops base lenses; custom lenses run in addition
     assert.ok(keys.includes("DevOps"))         // custom lens runs in addition
     assert.equal(data.lenses.DevOps.type, "custom")
     assert.ok(keys.includes("correctness") && keys.includes("security")) // other base lenses untouched
+    // Nothing downstream can disclose a silently-disabled lens (e.g. a repo
+    // switching off `security` right before its own risky `verify:` payload)
+    // unless the disabled set itself is on the emitted JSON.
+    assert.deepEqual(data.disabledLenses.sort(), ["devops", "performance"])
   })
 })
 
