@@ -317,7 +317,7 @@ commit the changes yourself.
   specific finding's `rejected[].reason` — not a single reason shared
   across the section.
 - **Verification** — always printed, built from `state.verifyBaseline` and
-  the last entry of `state.verifyRuns` (`SKILL.md` Step 6/6.5). Open with
+  the last entry of `state.verifyRuns` (`SKILL.md` Step 6/7). Open with
   the resolved command list and where it came from. Then one bullet per command
   **in that list** — including any the chain never reached, which get the
   last verdict below — with exactly one of these verdicts:

@@ -198,20 +198,41 @@ export function loadCustomInstructions(repo, deps = { readFileSync, existsSync }
   return parsed.map((i) => toLensDef(i, "custom"))
 }
 
-// Reads a top-level `<key>:` list of scalars from REVIEW.yaml — either a block
-// sequence or the inline `[a, b]` form. `key` is always a literal identifier
-// here, so it needs no regex escaping. Block items may sit at any indent,
-// including column 0 (`key:` then `- item`), which is valid YAML.
+// Reads a top-level `<key>:` value from REVIEW.yaml as a list of scalars — a
+// block sequence, the inline `[a, b]` form, or a single bare scalar (`key:
+// value`), which resolves to a one-item list. `key` is always a literal
+// identifier here, so it needs no regex escaping. Block items may sit at any
+// indent, including column 0 (`key:` then `- item`), which is valid YAML.
+//
+// Returns `{ items, present }`. `present` answers "does this key appear at
+// the top level at all", independent of how many items it resolved to — a
+// caller like `detectVerifyCommands` needs that to tell a deliberate
+// `verify: []` (opt-out) from the key being absent entirely (autodetect).
+// This is the one place that encodes what a top-level `key:` line looks
+// like; a caller must never grow its own copy of that regex to answer the
+// same question — that duplication is how key-presence and list-parsing
+// used to drift apart (a bare scalar like `verify: npm test` used to satisfy
+// a separate presence check but not this function's list forms, so it
+// silently resolved to zero items and got reported as an opt-out).
+//
+// A bare block-scalar indicator (`verify: |`, `verify: >`, with an optional
+// chomping/indentation suffix) is recognized as present but never taken as
+// item text — this parser does not support multi-line block scalars here
+// (unlike `parseInstructionsYaml`'s `instructions: |`), so treating the `|`
+// itself as a one-item command would silently hand a shell the literal `|`.
 export function parseTopLevelList(text, key) {
   const out = []
+  let present = false
   const inlineRe = new RegExp(`^${key}:\\s*\\[(.*)\\]\\s*$`)
   const blockRe = new RegExp(`^${key}:\\s*$`)
+  const scalarRe = new RegExp(`^${key}:\\s*(.+?)\\s*$`)
+  const blockScalarIndicator = /^[|>][+-]?\d*$/
   let inList = false
   for (const raw of text.split("\n")) {
     const line = raw.replace(/\r$/, "")
     const inline = line.match(inlineRe)
-    if (inline) { for (const p of inline[1].split(",")) { const v = clean(p); if (v) out.push(v) } ; inList = false; continue }
-    if (blockRe.test(line)) { inList = true; continue }
+    if (inline) { present = true; for (const p of inline[1].split(",")) { const v = clean(p); if (v) out.push(v) } ; inList = false; continue }
+    if (blockRe.test(line)) { present = true; inList = true; continue }
     if (inList) {
       // A document separator ends the list — it is not an item. Checked before
       // the item match because `---` otherwise satisfies it (dash + `--`) now
@@ -222,20 +243,25 @@ export function parseTopLevelList(text, key) {
       if (line.trim() === "" || line.trim().startsWith("#")) continue
       inList = false
     }
+    const scalar = line.match(scalarRe)
+    if (scalar) {
+      present = true
+      if (!blockScalarIndicator.test(scalar[1])) { const v = clean(scalar[1]); if (v) out.push(v) }
+    }
   }
-  return out
+  return { items: out, present }
 }
 
 // The optional top-level `disableDefaultLenses:` key: base-lens names the repo
 // wants turned off entirely. Names are matched case-insensitively in main().
 export function parseDisabledLenses(text) {
-  return parseTopLevelList(text, "disableDefaultLenses")
+  return parseTopLevelList(text, "disableDefaultLenses").items
 }
 
 // The optional top-level `verify:` key: shell commands loupe runs after a fix
-// pass to catch regressions its own fixes introduced (SKILL.md Step 6.5).
+// pass to catch regressions its own fixes introduced (SKILL.md Step 7).
 export function parseVerifyCommands(text) {
-  return parseTopLevelList(text, "verify")
+  return parseTopLevelList(text, "verify").items
 }
 
 export function loadDisabledLenses(repo, deps = { readFileSync, existsSync }) {
@@ -279,13 +305,6 @@ export function parseMakefileTargets(text) {
     if (m) out.add(m[1])
   }
   return out
-}
-
-// True when REVIEW.yaml declares a top-level `verify:` key at all, regardless of
-// what it parses to. An empty list is a deliberate "do not verify" and must not
-// be mistaken for an absent key, which is what enables autodetection.
-function hasTopLevelKey(text, key) {
-  return new RegExp(`^${key}:`, "m").test(text)
 }
 
 // Resolves the verification commands for a repo. An explicit top-level `verify:`
@@ -334,12 +353,17 @@ export function detectVerifyCommands(repo, { all = false } = {}, deps = { readFi
 
   const review = join(repo, "REVIEW.yaml")
   if (deps.existsSync(review)) {
-    let text = "", explicit = []
-    try { text = deps.readFileSync(review, "utf8"); explicit = parseVerifyCommands(text) } catch { text = ""; explicit = [] }
+    let explicit = [], present = false
+    try {
+      const parsed = parseTopLevelList(deps.readFileSync(review, "utf8"), "verify")
+      explicit = parsed.items; present = parsed.present
+    } catch { explicit = []; present = false }
     // Key presence, not list length, decides. A repo that writes `verify: []`
-    // is opting out; falling through to autodetection there would run commands
-    // it explicitly declined — the opposite of what it asked for.
-    if (explicit.length || hasTopLevelKey(text, "verify")) {
+    // is opting out, and the single-command shorthand `verify: npm test` is
+    // opting in to exactly that one command; falling through to autodetection
+    // in either case would run commands the repo didn't ask for, or skip the
+    // one command it did.
+    if (present) {
       return { commands: explicit, source: "REVIEW.yaml", skipped: explicit.length ? null : "opted-out", repoSupplied: true }
     }
   }
@@ -486,7 +510,7 @@ function main() {
     ? parseGeneratedAttrs(gitTry("check-attr", "gitlab-generated", "linguist-generated", "--", ...paths) ?? "")
     : new Set()
   const reviewable = allDiffs.filter((f) => f.diff.trim() && !generated.has(f.path))
-  // Resolved on every invocation (cheap, idempotent) so the orchestrator's Step 6.5
+  // Resolved on every invocation (cheap, idempotent) so the orchestrator's Step 7
   // never has to detect anything itself; `--all` suppresses autodetection.
   const verify = detectVerifyCommands(repo, { all })
   if (!reviewable.length) { console.log(JSON.stringify({ base, mergeBase, mode: committed ? "committed" : "working-tree", all, changedFiles: [], renamed: {}, generated: [...generated], verify, lenses: {} })); return }

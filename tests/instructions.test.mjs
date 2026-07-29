@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { parseInstructionsYaml, loadCustomInstructions, loadDefaultLenses, parseDisabledLenses, loadDisabledLenses, parseVerifyCommands } from "../skills/loupe/scripts/build-context.mjs"
+import { parseInstructionsYaml, loadCustomInstructions, loadDefaultLenses, parseDisabledLenses, loadDisabledLenses, parseVerifyCommands, parseTopLevelList } from "../skills/loupe/scripts/build-context.mjs"
 
 const YAML = `---
 # comment line
@@ -94,7 +94,7 @@ disableDefaultLenses:
 test("parseTopLevelList treats a document separator as the end of the list, not an item", () => {
   // `---` satisfies the zero-indent item regex (dash, then `--`), so without an
   // explicit guard an empty `verify:` followed by a separator yields the command
-  // `--`, which Step 6.5 would then try to run.
+  // `--`, which Step 7 would then try to run.
   assert.deepEqual(parseVerifyCommands("verify:\n---\ninstructions:\n  - name: X\n    instructions: y\n"), [])
   assert.deepEqual(parseDisabledLenses("disableDefaultLenses:\n---\n"), [])
   assert.deepEqual(parseVerifyCommands("verify:\n- npm test\n---\n- not an item\n"), ["npm test"])
@@ -108,6 +108,34 @@ verify:
 `
   assert.deepEqual(parseDisabledLenses(yaml), ["performance"])
   assert.deepEqual(parseVerifyCommands(yaml), ["npm test"])
+})
+
+test("parseVerifyCommands and parseDisabledLenses resolve a bare scalar to a one-item list", () => {
+  // `verify: npm test` is unambiguous shorthand for a single command. Before,
+  // only the block sequence and inline `[a, b]` forms were recognized as a
+  // list at all, so this scalar resolved to zero items and was reported as
+  // the repo opting out of verification entirely — the opposite of intent.
+  assert.deepEqual(parseVerifyCommands("verify: npm test\ninstructions:\n  - name: X\n    instructions: y\n"), ["npm test"])
+  assert.deepEqual(parseDisabledLenses("disableDefaultLenses: performance\n"), ["performance"])
+  // Quotes and a trailing inline comment are stripped, same as the block-item
+  // and inline-list forms.
+  assert.deepEqual(parseVerifyCommands('verify: "npm test" # run unit tests\n'), ["npm test"])
+})
+
+test("parseTopLevelList reports key presence independently of how many items it resolved", () => {
+  // `present` is what lets a caller tell a deliberate `verify: []` (opt-out)
+  // from the key being absent (autodetect) — list length alone can't.
+  assert.deepEqual(parseTopLevelList("verify: []\n", "verify"), { items: [], present: true })
+  assert.deepEqual(parseTopLevelList("disableDefaultLenses:\n  - performance\n", "verify"), { items: [], present: false })
+})
+
+test("parseTopLevelList treats a bare block-scalar indicator as present but yields no items", () => {
+  // `verify: |` / `verify: >` are YAML block-scalar sigils this targeted parser
+  // does not follow onto their indented lines (unlike `parseInstructionsYaml`'s
+  // `instructions: |`); taking the sigil itself as a one-item command would
+  // silently hand a shell the literal `|`.
+  assert.deepEqual(parseTopLevelList("verify: |\n  npm test\n", "verify"), { items: [], present: true })
+  assert.deepEqual(parseTopLevelList("verify: >\n  npm test\n", "verify"), { items: [], present: true })
 })
 
 test("loadDisabledLenses reads the disable list from REVIEW.yaml", () => {

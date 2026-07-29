@@ -200,6 +200,15 @@ test("detectVerifyCommands treats an empty verify: key as opting out, not as abs
   assert.deepEqual(detectVerifyCommands("/repo", {}, noKey), { commands: ["npm run test"], bodies: { test: "node --test" }, source: "package.json", skipped: null, repoSupplied: true })
 })
 
+test("detectVerifyCommands resolves the single-command shorthand `verify: npm test`, not an opt-out", () => {
+  // Before, only the block sequence and inline `[a, b]` forms were recognized
+  // as a list; a bare scalar resolved to zero items and `hasTopLevelKey`
+  // still saw the key, so this used to come back as `skipped: "opted-out"` —
+  // reporting the repo asked for no verification, the opposite of what it wrote.
+  const fs = fakeFs({ "/repo/REVIEW.yaml": "verify: npm test\ninstructions:\n  - name: X\n    instructions: y\n" })
+  assert.deepEqual(detectVerifyCommands("/repo", {}, fs), { commands: ["npm test"], source: "REVIEW.yaml", skipped: null, repoSupplied: true })
+})
+
 test("detectVerifyCommands reads a verify: list written at zero indent", () => {
   const fs = fakeFs({
     "/repo/REVIEW.yaml": "verify:\n- pnpm -F api test\n- make lint\ninstructions:\n  - name: X\n    instructions: y\n",
