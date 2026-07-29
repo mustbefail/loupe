@@ -668,8 +668,8 @@ loop where the code is actually executed.
    prompt alone. Then instruct it to fix the regression *only*; to keep every review fix
    from this iteration in place rather than undoing it to make the command
    pass; to add no unrelated changes; and — pasted through verbatim, the
-   same words Step 6 item 1 passes through — the git prohibitions from the
-   safety rules above. Then re-run the command chain from the start — every
+   same words Step 6's fix loop passes through when it dispatches an
+   executor — the git prohibitions from the safety rules above. Then re-run the command chain from the start — every
    command except the ones item 1 skips, whose verdict is still the
    baseline's: the repair executor just edited the working tree, so a
    command that passed earlier in this same run can have been broken by the
