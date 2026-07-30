@@ -246,3 +246,40 @@ test("parseTopLevelList recognizes both chomping/indentation orders of a block-s
   assert.deepEqual(parseTopLevelList("verify: |2-\n  npm test\n", "verify"), { items: [], present: true })
   assert.deepEqual(parseTopLevelList("verify: |-2\n  npm test\n", "verify"), { items: [], present: true })
 })
+
+test("parseTopLevelList strips a trailing inline comment before testing the inline-list form", () => {
+  // Before the fix, the three form-matchers ran against the raw line and
+  // stripInlineComment only ran later, inside clean(), on an already-captured
+  // value — so a comment on the header line defeated the inline-list matcher
+  // and the line fell through to the scalar matcher as one bogus item: a
+  // documented opt-out (`verify: []`) came back as an opt-in whose single
+  // command was the literal string "[]".
+  assert.deepEqual(
+    parseTopLevelList("verify: [] # verification disabled on purpose", "verify"),
+    { items: [], present: true },
+  )
+})
+
+test("parseTopLevelList strips a trailing inline comment from a multi-item inline list", () => {
+  assert.deepEqual(
+    parseTopLevelList("verify: [npm test, npm run lint] # keep it cheap", "verify"),
+    { items: ["npm test", "npm run lint"], present: true },
+  )
+})
+
+test("parseTopLevelList strips a trailing inline comment from a bare block header", () => {
+  // `verify: # comment` used to fall through to the scalar matcher and
+  // resolve to the bogus item ["# comment"] instead of the empty block list
+  // its author intended.
+  assert.deepEqual(parseTopLevelList("verify: # comment\n", "verify"), { items: [], present: true })
+})
+
+test("parseTopLevelList strips a trailing inline comment so disableDefaultLenses isn't silently dropped", () => {
+  // `disableDefaultLenses: [devops] # noisy` used to resolve to the bogus
+  // item ["[devops]"] — matching no base-lens name, so the repo's disable
+  // request was silently ignored while nothing disclosed that.
+  assert.deepEqual(
+    parseTopLevelList("disableDefaultLenses: [devops] # noisy", "disableDefaultLenses"),
+    { items: ["devops"], present: true },
+  )
+})

@@ -230,7 +230,13 @@ export function parseTopLevelList(text, key) {
   const blockScalarIndicator = /^[|>](?:\d+[+-]?|[+-]\d*)?$/
   let inList = false
   for (const raw of text.split("\n")) {
-    const line = raw.replace(/\r$/, "")
+    // Strip a trailing inline comment here, once, before any form is tested —
+    // not just inside clean() on an already-captured value. Otherwise a
+    // comment on the header line (`verify: [] # comment`, `verify: # comment`)
+    // defeats the inline-list and block matchers below and the line falls
+    // through to the scalar matcher as one bogus item (the comment text
+    // itself, or `["[]"]` — an opt-out read back as an opt-in).
+    const line = stripInlineComment(raw.replace(/\r$/, ""))
     const inline = line.match(inlineRe)
     if (inline) { present = true; for (const p of inline[1].split(",")) { const v = clean(p); if (v) out.push(v) } ; inList = false; continue }
     if (blockRe.test(line)) { present = true; inList = true; continue }
@@ -247,10 +253,11 @@ export function parseTopLevelList(text, key) {
     const scalar = line.match(scalarRe)
     if (scalar) {
       present = true
-      // Test the *cleaned* value, not the raw capture: an inline `# comment`
-      // is only stripped by `clean()`, so a header like `verify: | # comment`
-      // would otherwise miss the indicator check entirely and hand a shell
-      // the literal `|` as if it were a real command.
+      // `line` already had its inline comment stripped above, so `clean()`
+      // here only unquotes/trims — this still matters so a header like
+      // `verify: | # comment` (now just `verify: |` by the time it gets
+      // here) resolves to the bare indicator `|` and is caught below, rather
+      // than handing a shell the literal `|` as if it were a real command.
       const v = clean(scalar[1])
       if (!blockScalarIndicator.test(v)) { if (v) out.push(v) }
     }
@@ -490,6 +497,14 @@ export function buildLenses(reviewable, filesContent, lensDefs) {
 //                   report can disclose that a lens (e.g. "security") never
 //                   ran, rather than reading a report with zero findings
 //                   from it as a clean pass.
+//   shadowedLenses  Base lens names a same-named custom lens replaced instead
+//                   of disabling — buildLenses resolves an exact-name
+//                   collision by "last wins", so the repo's own custom
+//                   instructions silently stand in for the base lens (e.g.
+//                   "security") while the report would otherwise list that
+//                   name as having run its built-in checklist. Always
+//                   disjoint from disabledLenses: a name already removed by
+//                   `disableDefaultLenses:` can't also collide here.
 //   lenses          buildLenses()'s result — see its own comment.
 function main() {
   const argv = process.argv.slice(2)
@@ -564,7 +579,22 @@ function main() {
   const requestedDisabled = new Set(loadDisabledLenses(repo).map((n) => n.toLowerCase()))
   const allBaseDefs = loadDefaultLenses()
   const disabledLenses = allBaseDefs.filter((d) => requestedDisabled.has(d.name.toLowerCase())).map((d) => d.name)
-  if (!reviewable.length) { console.log(JSON.stringify({ base, mergeBase, mode: committed ? "committed" : "working-tree", all, changedFiles: [], renamed: {}, generated: [...generated], verify, disabledLenses, lenses: {} })); return }
+  // Base lenses that survive disabling, but whose name a custom lens also
+  // uses: buildLenses assigns `lenses[def.name]` per def in `lensDefs` order
+  // (base first, then custom), so an exact-name collision has the custom def
+  // silently replace the base one ("last wins") — not disabled, not
+  // disclosed, unless reported here. Judged the same way buildLenses itself
+  // resolves the collision: exact name-string match, not the case-insensitive
+  // comparison disableDefaultLenses uses — a differently-cased custom name
+  // does not actually collide as an object key. Resolved before the early
+  // return below (like disabledLenses) so it's still reported when nothing is
+  // reviewable, and always disjoint from disabledLenses since a disabled base
+  // lens is filtered out of `baseDefs` before this compares.
+  const baseDefs = allBaseDefs.filter((d) => !requestedDisabled.has(d.name.toLowerCase()))
+  const customDefs = loadCustomInstructions(repo)
+  const customNames = new Set(customDefs.map((d) => d.name))
+  const shadowedLenses = baseDefs.filter((d) => customNames.has(d.name)).map((d) => d.name)
+  if (!reviewable.length) { console.log(JSON.stringify({ base, mergeBase, mode: committed ? "committed" : "working-tree", all, changedFiles: [], renamed: {}, generated: [...generated], verify, disabledLenses, shadowedLenses, lenses: {} })); return }
 
   const filesContent = {}
   for (const f of reviewable) {
@@ -575,9 +605,8 @@ function main() {
   }
   const renamed = Object.fromEntries(allDiffs.filter((f) => f.renamed).map((f) => [f.newPath, f.oldPath]))
   // Then the repo's own REVIEW.yaml — a same-named custom lens overrides its
-  // base counterpart (buildLenses, last wins).
-  const baseDefs = allBaseDefs.filter((d) => !requestedDisabled.has(d.name.toLowerCase()))
-  const lensDefs = [...baseDefs, ...loadCustomInstructions(repo)]
+  // base counterpart (buildLenses, last wins; see shadowedLenses above).
+  const lensDefs = [...baseDefs, ...customDefs]
 
   // Pre-format the diff for each lens file so subagents receive the tagged form.
   const lenses = buildLenses(reviewable, filesContent, lensDefs)
@@ -587,7 +616,7 @@ function main() {
   console.log(JSON.stringify({
     base, mergeBase, mode: committed ? "committed" : "working-tree", all,
     changedFiles: reviewable.map((f) => f.path),
-    renamed, generated: [...generated], verify, disabledLenses, lenses,
+    renamed, generated: [...generated], verify, disabledLenses, shadowedLenses, lenses,
   }))
 }
 
