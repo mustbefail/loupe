@@ -213,7 +213,8 @@ executor and lands in the report's Rejected section (§5), not Fixed.
 ## 5. Final human-facing report
 
 Printed once, at the end of the loop (whichever stop condition fired), never
-before. Three sections plus a diff pointer. The sections are built from the
+before. Three finding buckets, a Lenses section, a Verification section, and a
+diff pointer. The three buckets are built from the
 merged, deduped findings across all iterations (§2) and are disjoint AND
 total — every finding lands in exactly one of them — by this priority
 order (first match wins):

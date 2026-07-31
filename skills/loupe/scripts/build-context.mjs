@@ -220,7 +220,10 @@ export function loadCustomInstructions(repo, deps = { readFileSync, existsSync }
 // are both valid) is recognized as present but never taken as item text —
 // this parser does not support multi-line block scalars here (unlike
 // `parseInstructionsYaml`'s `instructions: |`), so treating the `|` itself
-// as a one-item command would silently hand a shell the literal `|`.
+// as a one-item command would silently hand a shell the literal `|`. That
+// holds for **every** form, not just the bare-scalar one: an indicator can
+// also arrive as an inline-list element (`verify: [|, npm test]`) or as a
+// sequence item (`- |`), so the check lives where items are added.
 export function parseTopLevelList(text, key) {
   const out = []
   let present = false
@@ -228,6 +231,15 @@ export function parseTopLevelList(text, key) {
   const blockRe = new RegExp(`^${key}:\\s*$`)
   const scalarRe = new RegExp(`^${key}:\\s*(.+?)\\s*$`)
   const blockScalarIndicator = /^[|>](?:\d+[+-]?|[+-]\d*)?$/
+  // Every item, whatever form it arrived in, is added here. The block-scalar
+  // guard belongs at the one place items enter the list, not at one of the three
+  // sites that add them: it was first written into the bare-scalar branch alone,
+  // which left `verify: [|, npm test]` and a `- |` sequence item still handing a
+  // shell the literal indicator — the very outcome the guard exists to prevent.
+  const push = (captured) => {
+    const v = clean(captured)
+    if (v && !blockScalarIndicator.test(v)) out.push(v)
+  }
   let inList = false
   for (const raw of text.split("\n")) {
     // Strip a trailing inline comment here, once, before any form is tested —
@@ -238,7 +250,7 @@ export function parseTopLevelList(text, key) {
     // itself, or `["[]"]` — an opt-out read back as an opt-in).
     const line = stripInlineComment(raw.replace(/\r$/, ""))
     const inline = line.match(inlineRe)
-    if (inline) { present = true; for (const p of inline[1].split(",")) { const v = clean(p); if (v) out.push(v) } ; inList = false; continue }
+    if (inline) { present = true; for (const p of inline[1].split(",")) push(p); inList = false; continue }
     if (blockRe.test(line)) { present = true; inList = true; continue }
     if (inList) {
       // A document separator ends the list — it is not an item. Checked before
@@ -246,7 +258,7 @@ export function parseTopLevelList(text, key) {
       // that items may sit at zero indent.
       if (line.trim() === "---") { inList = false; continue }
       const m = line.match(/^\s*-\s*(.+?)\s*$/)
-      if (m) { out.push(clean(m[1])); continue }
+      if (m) { push(m[1]); continue }
       if (line.trim() === "" || line.trim().startsWith("#")) continue
       inList = false
     }
@@ -258,8 +270,7 @@ export function parseTopLevelList(text, key) {
       // `verify: | # comment` (now just `verify: |` by the time it gets
       // here) resolves to the bare indicator `|` and is caught below, rather
       // than handing a shell the literal `|` as if it were a real command.
-      const v = clean(scalar[1])
-      if (!blockScalarIndicator.test(v)) { if (v) out.push(v) }
+      push(scalar[1])
     }
   }
   return { items: out, present }
@@ -273,6 +284,12 @@ export function parseDisabledLenses(text) {
 
 // The optional top-level `verify:` key: shell commands loupe runs after a fix
 // pass to catch regressions its own fixes introduced (SKILL.md Step 7).
+//
+// Test-only convenience over `parseTopLevelList`, unlike `parseDisabledLenses`
+// above, which is a real seam `loadDisabledLenses` calls. `detectVerifyCommands`
+// does not go through here: it needs `present` as well as the items, and this
+// wrapper discards it. Kept because the tests read better against a named
+// entry point — do not read its existence as meaning it is on the live path.
 export function parseVerifyCommands(text) {
   return parseTopLevelList(text, "verify").items
 }

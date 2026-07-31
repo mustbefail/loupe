@@ -138,6 +138,19 @@ test("parseTopLevelList treats a bare block-scalar indicator as present but yiel
   assert.deepEqual(parseTopLevelList("verify: >\n  npm test\n", "verify"), { items: [], present: true })
 })
 
+test("parseTopLevelList rejects a block-scalar indicator in every item form, not just the bare scalar", () => {
+  // The guard was first written into the bare-scalar branch alone, so an
+  // indicator arriving as an inline-list element or a sequence item still became
+  // a command — a shell handed the literal `|`. It now sits where items are
+  // added, so no form can reach around it.
+  assert.deepEqual(parseTopLevelList("verify: [|, npm test]\n", "verify"), { items: ["npm test"], present: true })
+  assert.deepEqual(parseTopLevelList("verify: [>, npm test]\n", "verify"), { items: ["npm test"], present: true })
+  assert.deepEqual(parseTopLevelList("verify:\n  - |\n    npm test\n", "verify"), { items: [], present: true })
+  assert.deepEqual(parseTopLevelList("verify:\n  - >-\n  - npm test\n", "verify"), { items: ["npm test"], present: true })
+  // The bare-scalar form the guard originally covered still works.
+  assert.deepEqual(parseTopLevelList("verify: |2-\n  npm test\n", "verify"), { items: [], present: true })
+})
+
 test("loadDisabledLenses reads the disable list from REVIEW.yaml", () => {
   const yaml = "disableDefaultLenses:\n  - performance\ninstructions:\n  - name: X\n    instructions: y\n"
   assert.deepEqual(loadDisabledLenses("/repo", { existsSync: () => true, readFileSync: () => yaml }), ["performance"])

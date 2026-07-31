@@ -145,9 +145,10 @@ Parsed from the skill invocation's argument string. All are optional.
    skipped, after this session's own memory of Step 2's output may be gone. `verifyConsent` is
    written once, at the consent gate in Step 6: `"granted"` when the human
    confirms or when no ask was needed at all (the caller's own `--verify`),
-   `"declined"` when confirmation is refused; it stays `null` for a run
-   whose gate is skipped entirely (`--no-verify`, or an empty resolved
-   list). `verifyBaseline` is filled once, in Step 6 on the first iteration
+   `"declined"` when confirmation is refused; it stays `null` for any run
+   that never reaches the gate at all — `--no-verify`, an empty resolved
+   list, `--no-fix`, or a `fixQueue` that is never non-empty, which includes
+   the ordinary case of a review that finds nothing actionable. `verifyBaseline` is filled once, in Step 6 on the first iteration
    that reaches a fix (after the consent gate), and never rewritten; it
    stays `null` for a run that fixes nothing, which is also a run that
    executed nothing. `verifyRuns` gains one entry per iteration that
@@ -898,7 +899,7 @@ priority rules, the per-severity rendering (the gate-excluded suffix, the
 template are all specified there; do not duplicate or reinterpret them
 here.
 
-Three things this step must still do, beyond what §5 itself specifies:
+Four things this step must still do, beyond what §5 itself specifies:
 
 - Actually run `git diff --stat` and append its real output under the
   `### Diff` heading (the template's prose line is a fixed reminder that

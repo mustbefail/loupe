@@ -172,8 +172,11 @@ test("detectVerifyCommands marks every resolved command list as repo-supplied", 
   assert.equal(detectVerifyCommands("/repo", {}, mk).repoSupplied, true)
   const review = fakeFs({ "/repo/REVIEW.yaml": "verify:\n  - npm test\n" })
   assert.equal(detectVerifyCommands("/repo", {}, review).repoSupplied, true)
-  // An opt-out and a no-match resolve to nothing, so there is nothing to consent to.
+  // A deliberate `verify: []` opt-out is still repo *provenance*, so the flag
+  // stays true even though the list is empty — the gate tests both, and only
+  // asks when there is something to run.
   assert.equal(detectVerifyCommands("/repo", {}, fakeFs({ "/repo/REVIEW.yaml": "verify: []\n" })).repoSupplied, true)
+  // A no-match resolved nothing off disk at all, so there is no provenance.
   assert.equal(detectVerifyCommands("/repo", {}, fakeFs({})).repoSupplied, false)
 })
 
@@ -216,10 +219,11 @@ test("detectVerifyCommands treats an empty verify: key as opting out, not as abs
 })
 
 test("detectVerifyCommands resolves the single-command shorthand `verify: npm test`, not an opt-out", () => {
-  // Before, only the block sequence and inline `[a, b]` forms were recognized
-  // as a list; a bare scalar resolved to zero items and `hasTopLevelKey`
-  // still saw the key, so this used to come back as `skipped: "opted-out"` —
-  // reporting the repo asked for no verification, the opposite of what it wrote.
+  // Before, only the block sequence and inline `[a, b]` forms counted as a
+  // list, while a separate key-presence check saw the key regardless — so a
+  // bare scalar came back as `skipped: "opted-out"`, reporting that the repo
+  // asked for no verification, the opposite of what it wrote. The two checks
+  // are one function now; see `parseTopLevelList`'s comment for why.
   const fs = fakeFs({ "/repo/REVIEW.yaml": "verify: npm test\ninstructions:\n  - name: X\n    instructions: y\n" })
   assert.deepEqual(detectVerifyCommands("/repo", {}, fs), { commands: ["npm test"], source: "REVIEW.yaml", skipped: null, repoSupplied: true })
 })
