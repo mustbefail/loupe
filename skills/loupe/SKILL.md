@@ -36,10 +36,11 @@ Parsed from the skill invocation's argument string. All are optional.
 
 | Flag | Default | Meaning |
 |---|---|---|
+| `--repo <path>` | the current working directory | The repository to review. Passed through to `build-context.mjs --repo <path>` when given; when omitted, `build-context.mjs` defaults it to its own `process.cwd()`, which is the reviewed repo whenever this skill was invoked from inside it (the ordinary case). Once resolved, this path is "the reviewed repo" for the rest of this file — every git command, every verification command, and the scratchpad namespace (Step 1) all operate against it, not necessarily the orchestrator's own working directory. |
 | `--base <ref>` | the reviewed repo's default branch | The ref to diff against. Passed through to `build-context.mjs --base <ref>` when given; when omitted, let `build-context.mjs`'s own default-branch detection resolve it (see Step 2 — do not reimplement that detection here). |
 | `--max-iterations <n>` | `3` | Hard cap on the number of review→fix passes. |
-| `--fix` / `--no-fix` | `--fix` | Whether Step 6 dispatches the executor. Under `--no-fix`, actionable findings are never attempted and still surface in the final report's Deferred section as "attempted, unresolved" (per `output-format.md` §5 — that phrase covers both "attempted and failed" and "never attempted"). |
-| `--severity-gate <level>` | `high` | The minimum severity a finding must clear to become actionable (see "Severity ranks" under Step 5). Accepts `blocker`\|`high`\|`medium`\|`low` — a finding is actionable exactly when its severity rank meets or exceeds the gate's rank and the judge doesn't reject it (Step 5/6), so lowering the gate to `medium` or `low` genuinely widens what gets auto-fixed. |
+| `--fix` / `--no-fix` | `--fix` | Whether Step 6 dispatches the executor. Under `--no-fix`, actionable findings are never attempted and still surface in the final report's Deferred section as "attempted, unresolved" (per `output-format.md` §5 — that phrase covers both "attempted and failed" and "never attempted"). **`--fix` being the default doesn't mean a given run fixes anything:** it only dispatches for findings that already cleared `--severity-gate` (see that row below) and weren't rejected, and on a codebase already in decent shape that set is routinely empty — see the `--severity-gate` row for the measurement this is based on. |
+| `--severity-gate <level>` | `high` | The minimum severity a finding must clear to become actionable (see "Severity ranks" under Step 5). Accepts `blocker`\|`high`\|`medium`\|`low` — a finding is actionable exactly when its severity rank meets or exceeds the gate's rank and the judge doesn't reject it (Step 5/6), so lowering the gate to `medium` or `low` genuinely widens what gets auto-fixed. **In practice, expect the default to fix nothing on a codebase that's already in decent shape:** a real run of four Opus reviewer lenses over a competently-written 4-file diff produced 20 findings — 12 `medium`, 8 `low`, zero `high`/`blocker` — every one of them Deferred under the default gate, since none reached `high`. Pass `--severity-gate medium` to have `loupe` actually change code on a codebase like that. |
 | `--committed` | off (review the working tree) | What to diff against `--base`. By default `loupe` reviews the **working tree** — every change not yet in the base, whether committed on the branch or still uncommitted (tracked edits and new untracked files) — so work-in-progress is reviewed and each pass's re-diff sees the edits Step 6 just made. Pass `--committed` to diff the commit range (`mergeBase..HEAD`) instead, reviewing only what has been committed (a PR/MR-style gate). Passed through to `build-context.mjs --committed`. |
 | `--verify <cmd>` | autodetected (see Step 7) | A shell command that must still pass after a fix pass. **Repeatable** — each occurrence appends one command, so `--verify "npx tsc --noEmit" --verify "npm test"` yields a two-command list that runs in that order, matching the list shape `REVIEW.yaml`'s `verify:` produces. Given at least once, it **replaces** the whole resolved list. Prefer repeating the flag over an `&&`-chain: a chain is one opaque command, so it loses the per-command baseline match (Step 7 item 2 matches by exact `cmd` string) and the per-command report bullets. Because the human wrote it, it needs no consent prompt (Step 6) and it is the **only** way to enable the gate under `--all`. |
 | `--no-verify` | off (verify when commands are known) | Turn the Step 7 regression gate off entirely: no baseline run, no post-fix run. Use it when the repo's test suite is too slow to run once per iteration, accepting that a fix can then break the build with nothing noticing. |
@@ -111,14 +112,21 @@ Parsed from the skill invocation's argument string. All are optional.
 
 ### Step 1 — Preflight
 
-1. Confirm the current working directory is inside a git repository:
+1. Confirm the reviewed repo is inside a git repository — the path given
+   via the skill's own `--repo` argument, or the current working directory
+   when `--repo` wasn't given:
    ```
-   git rev-parse --is-inside-work-tree
+   git -C <repo> rev-parse --is-inside-work-tree
    ```
-   If this errors or prints anything other than `true`, stop immediately
-   and report `loupe: not inside a git repository` — do not proceed to
-   Step 2. (`build-context.mjs` re-checks this itself; this earlier check
-   just gives a clean stop before spending a process launch on it.)
+   (omit `-C <repo>` entirely — plain `git rev-parse
+   --is-inside-work-tree` — when `--repo` wasn't given, so this still just
+   reads the orchestrator's own cwd, exactly as before). If this errors or
+   prints anything other than `true`, stop immediately and report `loupe:
+   <repo> is not inside a git repository` (or `loupe: not inside a git
+   repository` when there's no explicit `--repo` path to name) — do not
+   proceed to Step 2. (`build-context.mjs` re-checks this itself, against
+   that same `--repo` value; this earlier check just gives a clean stop
+   before spending a process launch on it.)
 
 2. Initialize a fresh state file for this run — `loupe` does not resume a
    previous invocation's state. Location: **your own session scratchpad
@@ -126,8 +134,10 @@ Parsed from the skill invocation's argument string. All are optional.
    throwaway files — never inside the reviewed repository's working tree,
    so it never needs a `.gitignore` entry and never risks being
    accidentally committed). Namespace it by the reviewed repo's absolute
-   path so concurrent reviews of different repos in the same session don't
-   collide, e.g.:
+   path (the `--repo` path, resolved to absolute, when given; the
+   orchestrator's own working directory otherwise — see the `--repo`
+   argument row and Step 2) so concurrent reviews of different repos in the
+   same session don't collide, e.g.:
    ```
    <scratchpad>/loupe/<abs-repo-path-with-/-replaced-by-->/state.json
    ```
@@ -159,8 +169,8 @@ Parsed from the skill invocation's argument string. All are optional.
    it already reflects the human's own uncommitted work, not just whatever
    the most recent dispatch did. It is a single reused slot, overwritten in
    place rather than accumulated: Step 6 writes it immediately before that
-   iteration's first executor dispatch (a hash of `git diff`'s current
-   output, e.g. via `git diff | sha1sum`), and Step 7 item 3 overwrites it
+   iteration's first executor dispatch (a hash of `git -C <repo> diff`'s current
+   output, e.g. via `git -C <repo> diff | sha1sum`), and Step 7 item 3 overwrites it
    again immediately before the repair executor's own dispatch, once the
    value Step 6 wrote has already served its purpose at Step 7's own skip
    check. Each site then compares a freshly computed hash, taken right after
@@ -171,16 +181,22 @@ Parsed from the skill invocation's argument string. All are optional.
 
 Run:
 ```
-node "${CLAUDE_SKILL_DIR}/scripts/build-context.mjs" [--base <base>] [--committed] [--all]
+node "${CLAUDE_SKILL_DIR}/scripts/build-context.mjs" [--repo <repo>] [--base <base>] [--committed] [--all]
 ```
-from inside the reviewed repo (the script defaults `--repo` to
-`process.cwd()`, which is the reviewed repo since that's where this skill
-was invoked). `${CLAUDE_SKILL_DIR}` is the directory this `SKILL.md` file
-lives in — Claude Code exports it when loupe runs as an installed plugin.
-The script is always at `scripts/build-context.mjs` relative to that
-directory, wherever this skill was installed; if the variable isn't set in
-your environment, substitute the absolute path to this skill's own
-directory. Include `--base <base>` only when
+Include `--repo <repo>` only when the user supplied one via the skill's own
+`--repo` argument — the repository being reviewed, which need not be the
+directory this skill was invoked from. Otherwise omit it and let the script
+default `--repo` to its own `process.cwd()`, which is the reviewed repo
+whenever the skill was invoked from inside it (the ordinary case). Whichever
+way it's resolved, that path is "the reviewed repo" for the rest of this
+file: every later step that runs a git command, runs a verification
+command, or says "the repo root" means this path — not necessarily the
+orchestrator's own working directory. `${CLAUDE_SKILL_DIR}` is the directory
+this `SKILL.md` file lives in — Claude Code exports it when loupe runs as an
+installed plugin. The script is always at `scripts/build-context.mjs`
+relative to that directory, wherever this skill was installed; if the
+variable isn't set in your environment, substitute the absolute path to
+this skill's own directory. Include `--base <base>` only when
 the user supplied one via the skill's own `--base` argument; otherwise omit
 it and let the script's own default-branch detection run (symbolic-ref to
 `origin/HEAD`, falling back to `main` then `master`). On iteration 0,
@@ -215,7 +231,8 @@ generated, verify, disabledLenses, shadowedLenses, lenses }`. `mode` is
 `{ commands, source, skipped, repoSupplied, bodies?, makefile? }` — the
 regression gate Step 7 runs (`bodies` is conditional: present only when
 `source` is `"package.json"`; `makefile` likewise, present only when `source`
-is `"Makefile"` — the resolved makefile's path relative to the repo root,
+is `"Makefile"` — the resolved makefile's path relative to the reviewed
+repo's root (Step 2),
 which the consent gate (Step 6) reads the target's recipe out of, rather than
 assuming a hardcoded `Makefile` guess). **The legal values of `source` and
 `skipped`, and what each field means, are defined in one place: the block comment above
@@ -306,11 +323,22 @@ Each reviewer's prompt must be self-contained and include:
 
 1. The lens name (the `lenses` key) and its `type`.
 2. The lens's `instructions` text verbatim.
-3. The full `files` array for this lens verbatim: `[{ path, diff,
-   original }]`. `diff` is already in the tagged `<chunk_header>`/`<line
-   type="added|deleted|context|nonewline" old_line=".." new_line="..">`
-   form `build-context.mjs` emits — tell the reviewer to read line numbers
-   for `old_line`/`new_line` off those tags, not by counting.
+3. This lens's `files` array, passed as a **file path**, not pasted into
+   the prompt: write `lenses[<name>].files` — still the same shape,
+   `[{ path, diff, original }]` — to
+   `<scratchpad>/loupe/<abs-repo-path-with-/-replaced-by-->/lens-<name-with-/-replaced-by-->-files.json`
+   (the same namespaced scratchpad directory Step 1's `state.json` lives
+   in), and give the reviewer that path, instructing it to read the file
+   rather than handing it the array itself. Do this because everything the
+   orchestrator pastes into a prompt verbatim it pays for twice — once
+   reading it into its own context to build the prompt, once writing it
+   back out as prompt text — and a lens's `files` array is routinely
+   hundreds of kilobytes on a real diff, a round trip that no longer
+   affords. `diff`, inside that file, is already in the tagged
+   `<chunk_header>`/`<line type="added|deleted|context|nonewline"
+   old_line=".." new_line="..">` form `build-context.mjs` emits — tell the
+   reviewer to read line numbers for `old_line`/`new_line` off those tags,
+   not by counting.
 4. For a `type: "custom"` lens: point it at
    `references/custom-instructions.md` §4 and require every finding's
    `comment` use the exact citation prefix `According to custom
@@ -379,11 +407,19 @@ and treat the judge result for the remainder of this iteration as
 ### Step 5 — Judge
 
 If the fresh finding set is non-empty, dispatch exactly one judge subagent:
-`critic`, with `model: sonnet` (the design's role table runs the judge at
-Sonnet even though `critic`'s own default is Opus — the judge is a
-triage/consistency pass, not a deep-reasoning one, and this keeps ensemble
-cost down). Fall back to `general-purpose` at `model: sonnet` if `critic`
-isn't available.
+`critic`, with `model: opus`. This used to run at Sonnet, on the premise
+that judging is a triage/consistency pass rather than a deep-reasoning one
+— that premise doesn't hold. The judge is the only role in the loop that
+sees every lens's findings side by side, so it is the only place a
+duplicate that two lenses reported under *different* `category` slugs can
+be caught at all (the dedup key is `sha1(file:new_line:category)` — same
+spot, different slug, different key, so hash dedup alone lets both
+survive); it is also the last check standing between a weak finding and an
+executor that edits the working tree. Both of those are exactly the kind of
+cross-finding reasoning Sonnet does less reliably, so the model choice
+follows the actual job, not a cost target — the added ensemble cost is
+accepted deliberately. Fall back to `general-purpose` at `model: opus` if
+`critic` isn't available.
 
 Give the judge, self-contained in its prompt:
 
@@ -536,7 +572,9 @@ take, and Step 7 will skip too.
    `state.verifyConsent = "granted"` too: nothing was declined, there was
    just nothing to ask.
 3. **Baseline.** With consent in hand, run each command in order from the
-   repo root — each under a wall-clock cap (a few minutes; a timeout counts
+   reviewed repo's root (the path Step 2 resolved — `--repo` if given, the
+   orchestrator's own working directory otherwise, never assumed to be the
+   latter) — each under a wall-clock cap (a few minutes; a timeout counts
    as a failure like any other) and with an **allowlisted** environment:
    pass through only `PATH`, `HOME`, `SHELL`, `LANG`, `LC_*`, `TZ`, `TERM`,
    `TMPDIR`, and `CI`, and drop everything else the session's own
@@ -596,7 +634,7 @@ take, and Step 7 will skip too.
 Immediately before the loop below dispatches anything — i.e. before its very
 first executor call this iteration, regardless of how many of that first
 batch run in parallel per item 2 — record `state.treeFingerprint`: a hash of
-the current `git diff` output (e.g. `git diff | sha1sum`), overwriting
+the current `git -C <repo> diff` output (e.g. `git -C <repo> diff | sha1sum`), overwriting
 whatever the field held before. This is the pre-dispatch snapshot Step 7's
 third skip condition needs to tell whether this iteration's fixes changed the
 tree at all; nothing else in state captures one, and `git diff` run without a
@@ -618,7 +656,7 @@ in the first place):
    complete before the next starts on that file — so concurrent edits
    can't clobber each other. Fixes on different files may run in
    parallel.
-3. Confirm the fix: check that `git diff` now touches the finding's file
+3. Confirm the fix: check that `git -C <repo> diff` now touches the finding's file
    in a way that addresses the comment (if a `suggestion` was given,
    confirm `from` no longer appears verbatim, or an equivalent change is
    present). If confirmed: `status: "fixed"`, `fixedInIteration: N`. This
@@ -648,9 +686,9 @@ staying silent about a skipped gate:
   the gate cannot run even in principle;
 - `--no-fix` was given, Step 6 attempted no fix this iteration, or **no fix
   attempt this iteration modified the tree at all** — checkable against
-  `state.treeFingerprint`, the hash of `git diff`'s output Step 6 recorded
+  `state.treeFingerprint`, the hash of `git -C <repo> diff`'s output Step 6 recorded
   immediately before this iteration's first executor dispatch, compared
-  against a freshly computed hash of the current `git diff`; this is not
+  against a freshly computed hash of the current `git -C <repo> diff`; this is not
   inferred from Step 6's confirmation: a fix attempt can edit the finding's
   file and still fail confirmation (Step 6 items 3–4), so "confirmed" and
   "changed the tree" are not the same test, and only a genuinely untouched
@@ -672,8 +710,10 @@ three places in the loop where the repo's own code is actually executed —
 and this is the only one of those three that exists specifically to catch a
 regression a fix just introduced.
 
-1. **Run**, from the repo root, each command in the resolved list in order,
-   with two exclusions:
+1. **Run**, from the reviewed repo's root (the same resolved path Step 2
+   used, per the `--repo` argument — not necessarily the orchestrator's own
+   working directory), each command in the resolved list in order, with two
+   exclusions:
    - **Skip any command that already failed in `state.verifyBaseline`**, for
      as long as the loop is still running. Item 2 below classifies such a
      command pre-existing and forbids acting on it, so re-running it every
@@ -735,7 +775,7 @@ regression a fix just introduced.
 
 3. **Repair forward — exactly one attempt.** Immediately before dispatching
    the repair executor below, overwrite `state.treeFingerprint` with a fresh
-   hash of the current `git diff` output — the value Step 6 wrote there
+   hash of the current `git -C <repo> diff` output — the value Step 6 wrote there
    already did its job at this step's own third skip condition, earlier in
    this same run of Step 7, so reusing the field for the repair's own
    before-snapshot loses nothing. Dispatch `executor`,
@@ -756,7 +796,7 @@ regression a fix just introduced.
    executor — the git prohibitions from the safety rules above.
 
    The repair executor gets exactly one attempt, and nothing guarantees it
-   edits anything. Check that against a fresh hash of the current `git diff`
+   edits anything. Check that against a fresh hash of the current `git -C <repo> diff`
    compared to the `state.treeFingerprint` just recorded above — the same
    fingerprinting test this step's own third skip condition (above) uses,
    never the repair executor's own say-so about what it did. If the hashes
@@ -874,9 +914,9 @@ code shifts what the next pass's reviewers see).
 
 If `stop` is true: first, if a baseline was ever taken and Step 7 ever
 skipped a command as pre-existing (Step 7 item 1), run each such command
-exactly once more here — under the same wall-clock cap and allowlisted
-environment Step 6 item 3 (Baseline) defines, which extends those
-constraints by pointer to this site — and update the last
+exactly once more here — under the same wall-clock cap, allowlisted
+environment, and reviewed-repo root Step 6 item 3 (Baseline) defines, which
+extends those constraints by pointer to this site — and update the last
 `state.verifyRuns` entry's `results` with its real verdict. This is the one
 re-run Step 7 item 1 defers to this point. Then **recompute that same
 entry's `outcome`** from its updated `results`, since the value Step 7
@@ -901,9 +941,11 @@ here.
 
 Four things this step must still do, beyond what §5 itself specifies:
 
-- Actually run `git diff --stat` and append its real output under the
-  `### Diff` heading (the template's prose line is a fixed reminder that
-  always appears; the stat output is appended below it, not fabricated).
+- Actually run `git -C <repo> diff --stat` — `<repo>` is the same reviewed
+  repo Step 2 resolved, not necessarily the orchestrator's own working
+  directory — and append its real output under the `### Diff` heading (the
+  template's prose line is a fixed reminder that always appears; the stat
+  output is appended below it, not fabricated).
 - A bucket with zero entries still prints its `(0)` heading with no
   bullets under it, so the report's shape is stable across runs.
 - Render the `### Lenses` section from Step 2's `lenses` keys and its
@@ -931,6 +973,6 @@ Four things this step must still do, beyond what §5 itself specifies:
 If any of `code-reviewer`, `security-reviewer`, `critic`, or `executor` is
 unavailable in the current environment, substitute `general-purpose` at
 the same model the unavailable agent would have used (`opus` for
-reviewers, `sonnet` for the judge and the executor), with the identical
+reviewers and the judge, `sonnet` for the executor), with the identical
 prompt content described above. The loop's logic doesn't change — only
 which agent type carries out a given dispatch.

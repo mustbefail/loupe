@@ -45,6 +45,52 @@ export function parseGeneratedAttrs(out) {
   return set
 }
 
+// Built-in generated-file exclusions — independent of whatever the reviewed
+// repo's own .gitattributes marks (parseGeneratedAttrs above). That mechanism
+// only returns anything when a repo ships a .gitattributes saying so, and most
+// don't; a live run against a repo with none put a lockfile's full diff plus
+// its pre-image (tens of KB no lens can say anything useful about) straight
+// into every lens' payload. Kept deliberately small and unambiguous: wrongly
+// excluding real source is a much worse failure than reviewing a lockfile — it
+// would leave the report silently not covering a file the human believes was
+// reviewed. No directory conventions here (dist/, build/, vendor/, ...): those
+// are conventions, not guarantees, and some repos genuinely keep source there.
+const GENERATED_LOCKFILES = new Set([
+  // JS/TS package managers: one lockfile format per manager, always machine-written.
+  "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "bun.lock",
+  // Other ecosystems' equivalents — same machine-written, never-hand-edited contract.
+  "Cargo.lock", "poetry.lock", "Gemfile.lock", "composer.lock", "go.sum",
+])
+
+// Minified/derived build output: always regenerated from an unminified
+// sibling that itself remains subject to review, so the derived file itself
+// carries nothing a lens could usefully comment on.
+const GENERATED_SUFFIXES = [".min.js", ".min.css", ".map"]
+
+// Matches a changed-file path against the built-in list above. Lockfiles match
+// on the bare basename so a workspace package's own lockfile counts the same
+// as one at the repo root; suffix patterns are checked against the basename
+// only (never the full path) so a directory segment can't accidentally supply
+// the match. `endsWith`, not `includes`: a file that merely contains ".min.js"
+// without ending in it (e.g. "src/min.jsx", "notmin.js.ts") is real source.
+export function isBuiltinGenerated(path) {
+  const basename = path.split("/").pop()
+  if (GENERATED_LOCKFILES.has(basename)) return true
+  return GENERATED_SUFFIXES.some((suf) => basename.endsWith(suf))
+}
+
+// Unions the repo's own git-attribute-based exclusions with the built-in list:
+// a path is generated when *either* source says so. Attributes stay
+// authoritative for whatever they cover — this never removes a path attrs
+// added — the built-in list only adds the specific, unambiguous class of file
+// every repo has one of but few remember to mark, whether or not
+// .gitattributes exists at all.
+export function markGenerated(paths, attrGenerated) {
+  const set = new Set(attrGenerated)
+  for (const path of paths) if (isBuiltinGenerated(path)) set.add(path)
+  return set
+}
+
 export function fnmatch(name, pat) {
   let re = ""
   for (let i = 0; i < pat.length; i++) {
@@ -504,7 +550,8 @@ export function buildLenses(reviewable, filesContent, lensDefs) {
 //   all             Whether --all (whole-repo) mode was used.
 //   changedFiles    Reviewable file paths, post generated-file exclusion.
 //   renamed         { newPath: oldPath } for renamed files.
-//   generated       Paths excluded as generated (linguist/gitlab attributes).
+//   generated       Paths excluded as generated — the union of linguist/gitlab
+//                   attributes and the built-in list (see markGenerated).
 //   verify          detectVerifyCommands()'s result — see its own comment.
 //   disabledLenses  Base lens names this repo's own REVIEW.yaml
 //                   `disableDefaultLenses:` actually turned off — resolved
@@ -580,9 +627,10 @@ function main() {
     if (intentToAdd.length) gitTry("reset", "-q", "HEAD", "--", ...intentToAdd)
   }
   const paths = allDiffs.map((f) => f.path).filter(Boolean)
-  const generated = paths.length
+  const attrGenerated = paths.length
     ? parseGeneratedAttrs(gitTry("check-attr", "gitlab-generated", "linguist-generated", "--", ...paths) ?? "")
     : new Set()
+  const generated = markGenerated(paths, attrGenerated)
   const reviewable = allDiffs.filter((f) => f.diff.trim() && !generated.has(f.path))
   // Resolved on every invocation (cheap, idempotent) so the orchestrator's Step 7
   // never has to detect anything itself; `--all` suppresses autodetection.

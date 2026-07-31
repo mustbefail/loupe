@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { parseDiff, fnmatch, matchesInstruction, parseGeneratedAttrs, parseMakefileTargets, detectVerifyCommands, parseTopLevelList } from "../skills/loupe/scripts/build-context.mjs"
+import { parseDiff, fnmatch, matchesInstruction, parseGeneratedAttrs, isBuiltinGenerated, markGenerated, parseMakefileTargets, detectVerifyCommands, parseTopLevelList } from "../skills/loupe/scripts/build-context.mjs"
 
 // Minimal fs stand-in keyed by absolute path, so verification detection can be
 // tested without touching a real repo.
@@ -64,6 +64,41 @@ test("parseGeneratedAttrs collects set/true paths", () => {
   const set = parseGeneratedAttrs(out)
   assert.ok(set.has("a.rb") && set.has("b.rb") && set.has("c.rb"))
   assert.equal(set.has("d.rb"), false)
+})
+
+test("isBuiltinGenerated matches a bare lockfile name at repo root and nested in a workspace", () => {
+  assert.equal(isBuiltinGenerated("package-lock.json"), true)
+  assert.equal(isBuiltinGenerated("packages/api/package-lock.json"), true)
+  assert.equal(isBuiltinGenerated("go.sum"), true)
+  assert.equal(isBuiltinGenerated("services/worker/go.sum"), true)
+})
+
+test("isBuiltinGenerated matches a suffix pattern by basename, not by substring", () => {
+  assert.equal(isBuiltinGenerated("dist/app.min.js"), true)
+  // Contains ".min.js" but does not end with it — real source, must not match.
+  assert.equal(isBuiltinGenerated("src/min.jsx"), false)
+  assert.equal(isBuiltinGenerated("notmin.js.ts"), false)
+})
+
+test("isBuiltinGenerated does not flag real source files with superficially similar names", () => {
+  assert.equal(isBuiltinGenerated("src/package-lock-parser.js"), false)
+  assert.equal(isBuiltinGenerated("lib/go.sum.test.js"), false)
+})
+
+test("markGenerated unions the built-in list with git-attribute exclusions in one run", () => {
+  const attrGenerated = new Set(["custom-generated.rb"])
+  const paths = ["custom-generated.rb", "package-lock.json", "src/real.js"]
+  const generated = markGenerated(paths, attrGenerated)
+  assert.ok(generated.has("custom-generated.rb")) // from attributes
+  assert.ok(generated.has("package-lock.json"))   // from the built-in list
+  assert.equal(generated.has("src/real.js"), false)
+})
+
+test("markGenerated preserves an attribute-only exclusion the built-in list doesn't mention", () => {
+  const attrGenerated = new Set(["schema.generated.rb"])
+  const generated = markGenerated(["schema.generated.rb", "src/real.js"], attrGenerated)
+  assert.ok(generated.has("schema.generated.rb"))
+  assert.equal(generated.has("src/real.js"), false)
 })
 
 test("parseMakefileTargets collects rule targets and skips variables and dot-directives", () => {

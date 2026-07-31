@@ -37,6 +37,16 @@ sees its own edits on the next re-diff. All arguments are optional:
 --no-verify             # turn the post-fix regression gate off entirely
 ```
 
+The default `--severity-gate high` is a deliberately high bar — `blocker`/`high`
+means something is actually broken, not just a judgement call — but that also
+means `--fix` (itself the default) can easily change nothing. Lens reviewers
+skew toward `medium`/`low` findings on code that's already in reasonable shape:
+a real run of four lenses over a competently-written 4-file diff came back with
+20 findings and zero at `high` or `blocker` (12 `medium`, 8 `low`). On a codebase
+like that, expect the default run to be effectively read-only, with everything
+reported as Deferred rather than Fixed. Pass `--severity-gate medium` to have
+`loupe` actually change code.
+
 Just downloaded or cloned a codebase and want a review of everything in it,
 not just recent changes? Pass `--all` — `loupe` diffs against git's empty
 tree, so every tracked file is treated as newly added and gets reviewed. The
