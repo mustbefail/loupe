@@ -10,7 +10,7 @@
       "name": "loupe",
       "source": "./",
       "description": "Headless iterative code review — an ensemble of per-lens reviewer subagents plus a judge, looping review→fix→review until convergence. Reviews a branch's diff against its base, committed changes only, or the entire repo with --all.",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "license": "MIT",
       "category": "code-quality",
       "keywords": [
