@@ -41,11 +41,15 @@ The default `--severity-gate high` is a deliberately high bar — `blocker`/`hig
 means something is actually broken, not just a judgement call — but that also
 means `--fix` (itself the default) can easily change nothing. Lens reviewers
 skew toward `medium`/`low` findings on code that's already in reasonable shape:
-a real run of four lenses over a competently-written 4-file diff came back with
-20 findings and zero at `high` or `blocker` (12 `medium`, 8 `low`). On a codebase
-like that, expect the default run to be effectively read-only, with everything
-reported as Deferred rather than Fixed. Pass `--severity-gate medium` to have
-`loupe` actually change code.
+one real run of four lenses over a competently-written 4-file diff came back
+with 20 findings and zero at `high` or `blocker` (12 `medium`, 8 `low`), so
+that run was effectively read-only, everything reported as Deferred. But
+severity is a model judgement, not a fixed property of the code, so don't read
+that as a guarantee — a second run of those same four lenses over that
+identical diff came back with a `high` where the first pass had rated the same
+function `medium`. The same diff can clear the gate on one pass and not the
+next. Pass `--severity-gate medium` if you'd rather `loupe` act on `medium`
+findings too.
 
 Just downloaded or cloned a codebase and want a review of everything in it,
 not just recent changes? Pass `--all` — `loupe` diffs against git's empty
@@ -177,7 +181,7 @@ findings use and how matching interacts with the base lenses.
 - Custom-instruction glob matching is O(n²) per `**` segment on non-matching paths; fine for real git paths (~3ms worst case) but pathological multi-`**` patterns on very deep trees could be slow.
 - `parseDiff` does not decode git's quoted paths (`core.quotePath`), so changed files with spaces or non-ASCII names may be skipped from review.
 - `check-attr` receives all changed paths as CLI args, which could hit `ARG_MAX` on an extremely large diff.
-- The dedup key depends on a finding's line number, which shifts when an earlier fix in the same file adds or removes lines — an unresolved or rejected finding can resurface under a new key on the next iteration (bounded by `--max-iterations`).
+- The dedup key depends on a finding's line number and category slug, either of which can shift or drift between iterations — an unresolved or rejected finding can resurface under a new key on the next iteration. The judge is handed a record of everything already judged this run and is expected to catch that recurrence as a duplicate-in-substance rather than re-litigating it, but that's a model judgement, not a guarantee: a recurrence it misses is bounded by `--max-iterations` like everything else in the loop.
 - The verification gate runs once per iteration, after all of that iteration's fixes, so when several fixes land together a regression can only be attributed to a specific one if the failure output names its file. When it names none, the regression is still reported in full, just not pinned to a finding — a deliberate choice over guessing.
 - A verification command that was already failing before the run makes the gate blind for that command: a regression inside an already-red test suite can't be distinguished from the failure that was there first.
 - `--all` reviews every tracked file, so on a large repository it produces a correspondingly large per-lens context; it's most useful on small-to-medium codebases. Glob-scoped lenses (e.g. `devops`) partially bound the cost, since they only run on their matching files.

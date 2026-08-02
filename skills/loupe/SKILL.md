@@ -39,8 +39,8 @@ Parsed from the skill invocation's argument string. All are optional.
 | `--repo <path>` | the current working directory | The repository to review. Passed through to `build-context.mjs --repo <path>` when given; when omitted, `build-context.mjs` defaults it to its own `process.cwd()`, which is the reviewed repo whenever this skill was invoked from inside it (the ordinary case). Once resolved, this path is "the reviewed repo" for the rest of this file — every git command, every verification command, and the scratchpad namespace (Step 1) all operate against it, not necessarily the orchestrator's own working directory. |
 | `--base <ref>` | the reviewed repo's default branch | The ref to diff against. Passed through to `build-context.mjs --base <ref>` when given; when omitted, let `build-context.mjs`'s own default-branch detection resolve it (see Step 2 — do not reimplement that detection here). |
 | `--max-iterations <n>` | `3` | Hard cap on the number of review→fix passes. |
-| `--fix` / `--no-fix` | `--fix` | Whether Step 6 dispatches the executor. Under `--no-fix`, actionable findings are never attempted and still surface in the final report's Deferred section as "attempted, unresolved" (per `output-format.md` §5 — that phrase covers both "attempted and failed" and "never attempted"). **`--fix` being the default doesn't mean a given run fixes anything:** it only dispatches for findings that already cleared `--severity-gate` (see that row below) and weren't rejected, and on a codebase already in decent shape that set is routinely empty — see the `--severity-gate` row for the measurement this is based on. |
-| `--severity-gate <level>` | `high` | The minimum severity a finding must clear to become actionable (see "Severity ranks" under Step 5). Accepts `blocker`\|`high`\|`medium`\|`low` — a finding is actionable exactly when its severity rank meets or exceeds the gate's rank and the judge doesn't reject it (Step 5/6), so lowering the gate to `medium` or `low` genuinely widens what gets auto-fixed. **In practice, expect the default to fix nothing on a codebase that's already in decent shape:** a real run of four Opus reviewer lenses over a competently-written 4-file diff produced 20 findings — 12 `medium`, 8 `low`, zero `high`/`blocker` — every one of them Deferred under the default gate, since none reached `high`. Pass `--severity-gate medium` to have `loupe` actually change code on a codebase like that. |
+| `--fix` / `--no-fix` | `--fix` | Whether Step 6 dispatches the executor. Under `--no-fix`, actionable findings are never attempted and still surface in the final report's Deferred section as "attempted, unresolved" (per `output-format.md` §5 — that phrase covers both "attempted and failed" and "never attempted"). **`--fix` being the default doesn't mean a given run fixes anything:** it only dispatches for findings that already cleared `--severity-gate` (see that row below) and weren't rejected, and on a codebase already in decent shape that set is often empty. Don't treat "often" as a guarantee, though — see the `--severity-gate` row for why the same diff can go either way from one run to the next. |
+| `--severity-gate <level>` | `high` | The minimum severity a finding must clear to become actionable (see "Severity ranks" under Step 5). Accepts `blocker`\|`high`\|`medium`\|`low` — a finding is actionable exactly when its severity rank meets or exceeds the gate's rank and the judge doesn't reject it (Step 5/6), so lowering the gate to `medium` or `low` genuinely widens what gets auto-fixed. Reviewer output skews toward `medium`/`low` on already-healthy code — one real run of four Opus reviewer lenses over a competently-written 4-file diff produced 20 findings, 12 `medium`, 8 `low`, zero `high`/`blocker`, so the default gate Deferred every one of them — so a default run **may well** fix nothing. But severity is a model judgement, not a fixed property of the code: a second run of those same four lenses over that identical diff came back with a `high` where the first pass had rated the same function `medium`, so this is a tendency on healthy code, never a determinism guarantee — the same diff can clear the gate on one pass and not the next. Pass `--severity-gate medium` if you'd rather `loupe` act on `medium` findings too. |
 | `--committed` | off (review the working tree) | What to diff against `--base`. By default `loupe` reviews the **working tree** — every change not yet in the base, whether committed on the branch or still uncommitted (tracked edits and new untracked files) — so work-in-progress is reviewed and each pass's re-diff sees the edits Step 6 just made. Pass `--committed` to diff the commit range (`mergeBase..HEAD`) instead, reviewing only what has been committed (a PR/MR-style gate). Passed through to `build-context.mjs --committed`. |
 | `--verify <cmd>` | autodetected (see Step 7) | A shell command that must still pass after a fix pass. **Repeatable** — each occurrence appends one command, so `--verify "npx tsc --noEmit" --verify "npm test"` yields a two-command list that runs in that order, matching the list shape `REVIEW.yaml`'s `verify:` produces. Given at least once, it **replaces** the whole resolved list. Prefer repeating the flag over an `&&`-chain: a chain is one opaque command, so it loses the per-command baseline match (Step 7 item 2 matches by exact `cmd` string) and the per-command report bullets. Because the human wrote it, it needs no consent prompt (Step 6) and it is the **only** way to enable the gate under `--all`. |
 | `--no-verify` | off (verify when commands are known) | Turn the Step 7 regression gate off entirely: no baseline run, no post-fix run. Use it when the repo's test suite is too slow to run once per iteration, accepting that a fix can then break the build with nothing noticing. |
@@ -399,7 +399,20 @@ Read the file back — every finding now carries `key`.
 
 Drop every finding whose `key` is already in `state.seen` — it was already
 judged (fixed, rejected, or deferred) in an earlier iteration and must not
-resurface. What remains is this iteration's **fresh** finding set. If it's
+resurface. **Be plain about what this drop does and doesn't catch:** it
+only catches a finding whose `file`, `new_line`, **and** `category` all
+came back identical to an earlier iteration's — a real, cheap win (4 of 14
+same-run recurrences in one measured run were caught exactly this way), but
+not a general recurrence check. A recurrence with a drifted `category` slug
+(reviewer subagents have no memory of an earlier pass's wording,
+`references/output-format.md` §1) or a `new_line` that shifted because an
+earlier fix in the same file added or removed lines will **not** be caught
+here — it will look identical to a brand-new finding to this step. Do not
+read a low count of drops here as evidence that recurrence is handled: it
+isn't, by design. The judge (Step 5) is what catches the rest, from the
+record of already-judged findings handed to it there — this step's job
+stops at the byte-identical case. What remains after this drop is this
+iteration's **fresh** finding set. If it's
 empty, skip Step 5's judge dispatch entirely — there's nothing to triage —
 and treat the judge result for the remainder of this iteration as
 `{ actionable: [], rejected: [], stop: true, summary: "no new findings this iteration" }`.
@@ -435,6 +448,17 @@ Give the judge, self-contained in its prompt:
 - Custom lenses' `instructions` text from the build-context output, if any
   (`type: "custom"` entries) — needed for the repo-overrides rule
   (`references/output-format.md` §3).
+- **A compact recurrence record**, drawn from `state.findings`: for every
+  entry already in there from an earlier iteration of this same run, its
+  `file`, `new_line`, `category`, `severity`, `lens`, current `status`
+  (`fixed`/`rejected`/`deferred`/`unresolved`), and a short gist of its
+  `comment` — not the full text; this is a recurrence check, not a
+  re-litigation, and the list only grows as the run continues. On
+  iteration 0, `state.findings` is empty, so this record is empty too and
+  nothing here changes. This is the input the judge's cross-iteration
+  recurrence rule (`references/output-format.md` §3) runs against, in
+  place of the dedup key (§2 there), which Step 4's drop already
+  established only catches a same-key repeat.
 - Paste `references/output-format.md` §3–§4 **verbatim** into the judge
   prompt. The actionable/rejected/gate-exclusion rules, the disjointness
   requirement, and the repo-overrides rule are all specified there — do
@@ -455,18 +479,47 @@ Give the judge, self-contained in its prompt:
   will actually stop (see Step 8 — the orchestrator ANDs it with its own
   guards).
 
-Update `state.findings`: for every key in `rejected[]`, upsert an entry
-with `status: "rejected"`, the reason, and `judgedInIteration: <N>`. For
-every key in `actionable[]`, upsert `status: "actionable"`,
-`judgedInIteration: <N>` (Step 6 will move it to `"fixed"` or
-`"unresolved"`). For every fresh finding whose key landed in **neither**
-array (excluded by the gate, or otherwise left unclassified by the judge),
-upsert `status: "deferred"`, `judgedInIteration: <N>`. Then append **every**
-key handed to the judge this iteration — actionable, rejected, and
-deferred (left unclassified) alike — to `state.seen`, so a rejected
-finding never resurfaces, a fixed one is never re-reported as new, and a
-deferred one doesn't churn the judge again under the same key next
-iteration.
+**Verify factual-disproof rejections before accepting them.** For every
+entry in `rejected[]` whose `reason` rests on a factual disproof rather
+than a relevance judgement — `references/output-format.md` §3 requires the
+judge to state, for that kind of rejection, the exact check it ran and
+what it observed; a "duplicate of", "noise", "out of scope", or
+"repo standard overrides" reason needs none of this and gets none of this
+scrutiny — read that stated check against the finding's own claim and
+confirm the check is actually *about* what the finding asserts. This is a
+cheap read, not a re-run of anything: in the measured case behind this
+rule, the finding said "throws mid-iteration → the matrix is left
+corrupted" and the reason said "verified bit-identical across several
+versions" with no mention of the throwing path at all — the mismatch is
+visible on the page without executing a line of code. When the stated
+check does address the finding's claim, accept the rejection as normal —
+nothing else changes. When it doesn't — the check exercises a different
+scenario, a different code path, or doesn't engage with the claim at all —
+do not accept the rejection: upsert `status: "deferred"` for that key
+instead of `"rejected"`, and record
+`overriddenRejection: { judgeReason: <rejected[].reason>, mismatch: <one-line
+note of what didn't line up> }` on the finding, so Step 10 can render it as
+an overridden rejection (`references/output-format.md` §5) rather than
+silently dropping the mismatch. Skip this check entirely for a rejection
+on relevance grounds (duplicate-in-substance, noise, out of scope, repo
+override) — it exists only for a claim that a finding's factual assertion
+is false, never for a judgement about relevance.
+
+Update `state.findings`: for every key in `rejected[]` **that was not
+overridden by the check above**, upsert an entry with `status: "rejected"`,
+the reason, and `judgedInIteration: <N>`; for every key the check above did
+override, upsert `status: "deferred"` and the `overriddenRejection` record
+instead — never `"rejected"`. For every key in `actionable[]`, upsert
+`status: "actionable"`, `judgedInIteration: <N>` (Step 6 will move it to
+`"fixed"` or `"unresolved"`). For every fresh finding whose key landed in
+**neither** array (excluded by the gate, or otherwise left unclassified by
+the judge), upsert `status: "deferred"`, `judgedInIteration: <N>`. Then
+append **every** key handed to the judge this iteration — actionable,
+rejected, and deferred (left unclassified, and overridden-rejected alike)
+— to `state.seen`, so a rejected finding never resurfaces, a fixed one is
+never re-reported as new, and a deferred one (including an
+overridden-rejection one) doesn't churn the judge again under the same key
+next iteration.
 
 ### Step 6 — Fix
 

@@ -50,10 +50,19 @@ Field rules:
 - `severity` — one of `blocker`, `high`, `medium`, `low`. See
   `review-lenses.md` for per-lens calibration. Severity drives the fix gate
   (§4 below) — do not inflate or deflate it to force an outcome.
-- `category` — a short, stable, kebab-case slug for the kind of problem
-  (e.g. `sql-injection`, `n-plus-one`, `missing-null-check`). Reuse the same
-  slug for the same *kind* of issue across findings — the dedup key depends
-  on it staying stable.
+- `category` — a short, kebab-case slug for the kind of problem (e.g.
+  `sql-injection`, `n-plus-one`, `missing-null-check`). Reuse the same slug
+  for the same *kind* of issue where you can — it helps within-pass
+  readability and lets the dedup key (§2) catch a same-iteration repeat —
+  but this is **best-effort only, never something the loop's correctness
+  depends on.** Each reviewer subagent runs with no memory of any earlier
+  iteration's slug choice, so the same underlying issue drifting in wording
+  across iterations is the expected case, not a failure: one measured run
+  saw the same finding labelled `duplicated-constants`, then
+  `magic-number`, then `magic-numbers` across three passes. Cross-iteration
+  recurrence is the judge's job (§3), working from the record `SKILL.md`
+  Step 5 hands it — not something a reviewer can secure by naming things
+  consistently.
 - `lens` — the exact lens name the reviewer was invoked as: `correctness`,
   `security`, `performance`, `maintainability`, `devops` for base lenses, or
   the custom instruction group's exact `name` string for a custom lens
@@ -91,9 +100,27 @@ already carry `key`; it only echoes those `key` values back into its
 `actionable`/`rejected` arrays — it never invents, recomputes, or omits a
 key. `findingId`, as used when referring to entries of `actionable` or
 `rejected[].key` (§3), is this same key — the two terms name the same
-value. The key is deterministic from `file` + `new_line` + `category` so
-the same real-world issue reduces to the same key across iterations and
-across lenses that happen to flag the same spot with the same category.
+value. The formula never changes: dropping `new_line` from it would merge
+two genuinely distinct same-category findings in one file, and a silent
+drop is worse than an occasional duplicate.
+
+**What this key is for, precisely: it is an iteration-local identity, not a
+cross-iteration one.** Within a single iteration it reliably collapses
+exact repeats — the same file, line, and category reported twice. Across
+iterations it catches only the subset of recurrences where all three of
+those happen to come back byte-identical, and two independent, measured
+effects mean that subset is small: a reviewer subagent has no memory of an
+earlier iteration's `category` slug, so the same issue's slug drifts as a
+matter of course (§1); and `loupe`'s own fixes routinely add or remove
+lines earlier in a file, shifting every `new_line` beneath them. One
+measured run saw 4 of 14 same-run recurrences caught this way and 6 missed
+— re-litigated from scratch under a fresh key, one of them a finding the
+judge had already rejected. Cross-iteration deduplication is therefore not
+this key's job; it belongs to the judge, which is handed a record of
+everything already judged this run for exactly this reason (§3, and
+`SKILL.md` Step 5). Nobody reading this section should conclude that a low
+`state.seen` hit rate means recurrence went undetected — it means the key
+did its narrow job and the judge did the rest.
 
 Consequences worth knowing:
 
@@ -103,20 +130,26 @@ Consequences worth knowing:
   about convergence, not exhaustive per-deleted-line tracking.
 - Two lenses flagging the same line under *different* `category` slugs
   produce two distinct keys and are **not** deduplicated against each
-  other. Keep `category` slugs consistent for the same underlying issue to
-  avoid duplicate reports.
+  other by the key. Keeping `category` slugs consistent helps (§1), but the
+  judge is what actually catches this: it sees every lens's findings side
+  by side and is the only place a same-spot, different-slug duplicate can
+  be caught at all.
 - The orchestrator checks each fresh key against `state.seen` before
-  handing findings to the judge (dropping repeats), and after the judge
-  triages, adds every key handed to the judge that iteration — actionable,
-  rejected, or left unclassified (deferred) — to `state.seen`. This is what
-  stops the loop from re-surfacing a finding the judge already rejected as
-  noise, or churning a deferred one under the same key next iteration.
+  handing findings to the judge (dropping exact repeats), and after the
+  judge triages, adds every key handed to the judge that iteration —
+  actionable, rejected, or left unclassified (deferred) — to `state.seen`.
+  This catches same-key recurrence cheaply; it is not the mechanism that
+  stops a rejected or fixed finding from resurfacing under a *different*
+  key — that guarantee comes from the judge's recurrence check (§3), not
+  from `state.seen`.
 - The key depends on `new_line`, which shifts whenever a fix earlier in the
   same file adds or removes lines. An unresolved — or even a rejected —
   finding lower in the file can therefore come back under a *different*
-  key on the next iteration, since its `new_line` moved. This isn't
-  tracked or reconciled against the old key; it's bounded by the
-  iteration cap like everything else in the loop.
+  key on the next iteration, since its `new_line` moved, and a drifted
+  `category` slug (§1) can do the same even with the line unchanged. This
+  is not left unreconciled: it is exactly the case the judge's
+  cross-iteration recurrence check (§3) exists to absorb, working from the
+  record of already-judged findings rather than from the key.
 
 ## 3. Judge output contract
 
@@ -149,6 +182,26 @@ findings — each already carrying the `key` the orchestrator attached in §2
   single aggregate `reason` field now lives, one entry per rejected
   finding. A `key` must never appear in both `actionable` and `rejected` —
   the two arrays are disjoint by construction.
+- **A factual disproof is a different act from a relevance judgement, and
+  needs different evidence.** "Duplicate-in-substance", "noise", and "out
+  of scope" are judgement calls about relevance — the reason alone is
+  sufficient. Rejecting because a finding's factual claim is false is an
+  empirical counter-claim instead, and it can be wrong in a way a relevance
+  judgement usually isn't: in one measured run the judge (Opus) rejected a
+  `medium` correctness finding — that a function corrupts the caller's
+  matrix if anything throws mid-iteration, for want of a `try`/`finally` —
+  with the reason that it had verified the matrix "stays bit-identical"
+  across several versions. That verification only exercised the
+  non-throwing path; the finding was about the throwing one, and
+  reproducing it afterwards found real corruption. The disproof was
+  confident, specific, and about the wrong scenario, and nothing in the
+  contract before this rule would let anything downstream tell. So:
+  whenever `rejected[].reason` rests on a factual disproof rather than a
+  relevance judgement, it must state the exact check the judge ran and
+  what that check observed — concretely enough that a reader can tell what
+  was actually tested. A reason that states only the conclusion ("this
+  can't happen", "verified false") without saying what was run to reach it
+  does not satisfy this.
 - **The repo overrides.** When the reviewed repo ships its own
   `REVIEW.yaml` with custom lenses, the judge is given those lenses'
   `instructions` text alongside the fresh findings (`build-context.mjs`'s
@@ -159,6 +212,31 @@ findings — each already carrying the `key` the orchestrator attached in §2
   overrides"` rather than `actionable` or leaving it unclassified — a
   repo's own documented standard takes priority over `loupe`'s built-in
   checklists.
+- **Cross-iteration recurrence is the judge's job, not the dedup key's.**
+  The key (§2) only catches a recurrence when a finding's file, line, and
+  category all come back identical to an earlier iteration's — a fresh
+  reviewer subagent has no memory of a previous slug choice, and one of
+  `loupe`'s own fixes shifts every line beneath it, so real recurrences
+  routinely arrive under a new key. `SKILL.md` Step 5 therefore hands the
+  judge a compact record of every finding already judged this run — each
+  one's `file`, `new_line`, `category`, `severity`, `lens`, its status
+  (`fixed`/`rejected`/`deferred`/`unresolved`), and a short gist of its
+  `comment`. Treat a fresh finding that restates the substance of an entry
+  in that record as a **duplicate-in-substance of an already-judged
+  finding**: put it in `rejected`, with a reason naming which earlier
+  finding it duplicates and how that one was resolved. A different line
+  number or a different `category` slug from that earlier entry is **not**
+  by itself grounds to call the finding new — that drift is exactly what
+  this check exists to absorb. The reverse holds just as firmly: a finding
+  at a location the diff has since *changed* can be genuinely new even
+  though it resembles an earlier one at the same spot, so judge substance,
+  never string or location similarity alone. (A real case: a fresh finding
+  about `mask.js:196` looked like a recurrence but was actually about code
+  a fix earlier in this same run had just introduced — genuinely new, not
+  a duplicate.) A finding already `rejected` in the record must never come
+  back as `actionable` under a new key, and one already `fixed` must never
+  be redispatched. On iteration 0 the record is empty and this check has
+  nothing to do.
 - The judge is never required to force every finding into `actionable` or
   `rejected`. A finding of any severity may be left out of both arrays;
   that omission is exactly what makes it "Deferred" in the final report
@@ -220,10 +298,15 @@ total — every finding lands in exactly one of them — by this priority
 order (first match wins):
 
 1. **Rejected** — the finding's `key` appears in some iteration's
-   `rejected` array (§3): the judge affirmatively marked it as noise,
-   duplicate-in-substance, or out of scope. This applies **regardless of
-   severity** and takes priority over the other two buckets. The reported
-   reason comes from that finding's `rejected[].reason`.
+   `rejected` array (§3) **and `SKILL.md` Step 5's factual-disproof check
+   did not override that rejection** (rule 3 below covers the overridden
+   case): the judge affirmatively marked it as noise, duplicate-in-substance,
+   out of scope, or an already-judged recurrence, or made a factual disproof
+   that held up under that check. This applies **regardless of severity**
+   and takes priority over the other two buckets. The reported reason comes
+   from that finding's `rejected[].reason`, attributed as the judge's own
+   reasoning — never presented as the report's own established conclusion
+   (§5 below, the Rejected bullet).
 2. **Fixed** — not Rejected, and the finding's `key` appeared in some
    iteration's `actionable` array (§3 — findings that cleared the
    *currently configured* `--severity-gate` and were not rejected), its
@@ -237,9 +320,14 @@ order (first match wins):
    and that the judge did not reject; any finding that was `actionable`
    but whose fix attempt failed, or was never attempted before the loop
    stopped — reported here as "attempted, unresolved" rather than silently
-   dropped; and any finding whose fix *did* land but was attributed an
+   dropped; any finding whose fix *did* land but was attributed an
    uncleared verification regression (`verifyFailed: true`), reported as
-   "applied, verification regressed".
+   "applied, verification regressed"; and any finding the judge rejected on
+   a factual-disproof ground where `SKILL.md` Step 5's check found the
+   stated check did not actually address what the finding claimed
+   (`overriddenRejection` on the finding, §5 below) — reported with both
+   what the judge claimed and what the mismatch was, never silently folded
+   into an ordinary rejection.
 
 Rejected and Fixed are each pinned to a specific, checkable condition
 (membership in `rejected[]`; membership in `actionable` plus a confirmed
@@ -271,6 +359,7 @@ defines where such a finding is reported if that happens.
 - `src/session.ts:9` [high/missing-null-check] <comment> — excluded by `--severity-gate blocker`.
 - `src/cache.ts:23` [blocker/race-condition] <comment> — attempted, unresolved.
 - `src/auth.ts:31` [high/missing-authz] <comment> — applied, verification regressed.
+- `src/mask.js:88` [medium/correctness] findBestMask mutates the caller's matrix without a try/finally, corrupting it if a write throws mid-iteration — judge said the matrix stays bit-identical across versions 1–40; overridden: that check only covered the non-throwing path.
 
 ### Rejected (N)
 - `src/util.ts:8` [low/naming] <comment> — judge: <rejected[].reason for this key>
@@ -306,7 +395,7 @@ commit the changes yourself.
   they were judged, dispatched to the executor, and confirmed applied.
   Bullet text is the finding's own `comment` (§1).
 - **Deferred** — the catch-all bucket (§5 rule 3): everything not Rejected
-  and not Fixed. In practice this covers three cases: (1) findings of any
+  and not Fixed. In practice this covers four cases: (1) findings of any
   severity excluded from `actionable` by the current `--severity-gate` and
   not rejected by the judge; (2) findings that were `actionable` but never
   got a confirmed fix before the loop stopped, rendered with a trailing
@@ -314,22 +403,39 @@ commit the changes yourself.
   carrying `verifyFailed: true` — the fix landed, but the verification gate
   attributed an uncleared regression to it and the repair attempt didn't
   clear it — rendered with a trailing " — applied, verification regressed"
-  instead of a `Suggestion:` line. Case (3)'s edit is still in the working
-  tree (nothing is ever reverted, `SKILL.md` safety rules), so the bullet
-  is telling the human where to look, not what to re-apply; the failing
-  command's output lives in the Verification section below. For case
-  (1), render a `suggestion` if the finding carries one as the
-  `Suggestion:` line (omit the line entirely when there is none); a
-  `low`-severity finding never gets a `Suggestion:` line even if one is
-  present, since a below-gate `low` finding is report-only (a `low`
-  finding is auto-fixed only under `--severity-gate low` — §4). Whether
-  the loop may stop while an `actionable` finding is still unresolved is
-  governed by `SKILL.md`'s Fix step — this bucket is only where such a
-  finding is reported if it occurs.
+  instead of a `Suggestion:` line; (4) findings the judge rejected on a
+  factual-disproof ground where `SKILL.md` Step 5's check found the stated
+  check did not actually address what the finding claimed — carried as
+  `overriddenRejection: { judgeReason, mismatch }` on the finding, and
+  rendered with a trailing " — judge said <judgeReason, paraphrased
+  briefly>; overridden: <mismatch>" instead of a `Suggestion:` line, so the
+  human sees both what the judge concluded and why the orchestrator didn't
+  accept it. Case (3)'s edit is still in the working tree (nothing is ever
+  reverted, `SKILL.md` safety rules), so the bullet is telling the human
+  where to look, not what to re-apply; the failing command's output lives
+  in the Verification section below. Case (4)'s finding was never fixed —
+  it is still an ordinary, unactioned Deferred entry in every other respect;
+  only the trailing note and its source differ from case (1). For case (1),
+  render a `suggestion` if the finding carries one as the `Suggestion:`
+  line (omit the line entirely when there is none); a `low`-severity
+  finding never gets a `Suggestion:` line even if one is present, since a
+  below-gate `low` finding is report-only (a `low` finding is auto-fixed
+  only under `--severity-gate low` — §4). Whether the loop may stop while
+  an `actionable` finding is still unresolved is governed by `SKILL.md`'s
+  Fix step — this bucket is only where such a finding is reported if it
+  occurs.
 - **Rejected** — findings whose `key` is in some iteration's `rejected`
-  array (§3), regardless of severity. The `judge: ...` text is that
-  specific finding's `rejected[].reason` — not a single reason shared
-  across the section.
+  array (§3) and were not overridden per case (4) above, regardless of
+  severity. The `judge: ...` text is that specific finding's
+  `rejected[].reason` — not a single reason shared across the section —
+  and it must read as an attribution, not a fact the report is asserting
+  on its own authority: the judge said this, not "this is so". That
+  distinction matters most for a factual-disproof rejection (§3): stating
+  "verified X" unattributed reads as the report itself having verified X,
+  and a judge's disproof can be confidently wrong in a way a relevance
+  judgement (duplicate/noise/out of scope) usually isn't — which is
+  exactly why an unconfirmed factual disproof doesn't land here at all
+  (case (4) above), only a confirmed one does.
 - **Lenses** — always printed, built from `build-context.mjs`'s `lenses` keys,
   its `disabledLenses` array, and its `shadowedLenses` array. Name the lenses
   that ran, and — whenever `disabledLenses` is non-empty — name every base
