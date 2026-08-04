@@ -659,7 +659,12 @@ take, and Step 7 will skip too.
    `source`. Only when `source` is `"package.json"` does `verify.bodies`
    exist at all — print it in full there: it is the actual script body each
    whitelisted name expands to, `pre`/`post` hooks included, and a name like
-   `npm test` says nothing about what that body actually runs. For
+   `npm test` says nothing about what that body actually runs. Present the
+   hooks as what they are — bodies collected on npm's hook naming whichever
+   manager the command line names, because whether pnpm, yarn or bun runs
+   pre/post varies by manager and version and `build-context.mjs` does not
+   resolve which. Erring toward showing a hook that may not run is the point;
+   don't silently upgrade "may run" to "will run" when you print it. For
    `source: "Makefile"`, say explicitly that no body was resolved by
    `build-context.mjs` — a Makefile target's recipe is never read there, so
    the target name (e.g. `make test`) alone would tell the human nothing

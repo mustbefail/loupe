@@ -446,13 +446,23 @@ export function parseMakefileTargets(text) {
 //                 the flag the orchestrator's consent gate tests: this function
 //                 resolves candidates, it never authorizes them.
 //   bodies        Present only when source is "package.json": one entry per
-//                 whitelisted command's own script body, plus its
-//                 `pre<name>`/`post<name>` hooks when the repo defines them —
-//                 `npm run <name>` executes those too, invisibly to the name
-//                 alone. Keyed by script name, e.g. { test: "node --test",
-//                 pretest: "node ./setup.js" }. This is disclosure data for
-//                 the consent gate to print (SKILL.md Step 6) — never a trust
-//                 input; nothing decides anything from it.
+//                 whitelisted command's own script body, plus the
+//                 `pre<name>`/`post<name>` hooks npm's model defines, where the
+//                 repo defines them — `npm run <name>` executes those too,
+//                 invisibly to the name alone. Keyed by script name, e.g.
+//                 { test: "node --test", pretest: "node ./setup.js" }.
+//                 The hook set is npm's, but `commands` may say pnpm, yarn or
+//                 bun: whether a given manager runs pre/post at all differs by
+//                 manager, by major version, and in at least one case by a
+//                 config key, and this function resolves none of that. It
+//                 collects them regardless, because the two error directions
+//                 are not symmetric — printing a hook that turns out not to
+//                 run tells a human more than they needed, while omitting one
+//                 that does run is precisely the surprise the gate exists to
+//                 prevent. Not covered either way: a manager running some hook
+//                 npm has no name for. This is disclosure data for the consent
+//                 gate to print (SKILL.md Step 6) — never a trust input;
+//                 nothing decides anything from it.
 //   makefile      Present only when source is "Makefile": the resolved file's
 //                 path relative to `repo`, e.g. "GNUmakefile" — one of
 //                 "GNUmakefile" | "makefile" | "Makefile", whichever this repo's
@@ -491,10 +501,12 @@ export function detectVerifyCommands(repo, { all = false } = {}, deps = { readFi
     const pm = detectPackageManager(repo, deps)
     const names = pickVerifyNames((n) => typeof scripts[n] === "string" && Boolean(scripts[n].trim()))
     const commands = names.map((n) => `${pm} run ${n}`)
-    // Disclosure only (see the shape comment above) — the whitelist predicate
-    // above never inspects `pre`/`post` hooks, but `npm run <n>` runs them
-    // too, so the consent gate needs these bodies to show what actually
-    // executes, not just the whitelisted name.
+    // Disclosure only — the whitelist predicate above never inspects
+    // `pre`/`post` hooks, but the resolved `${pm} run <n>` may execute them
+    // anyway, so the consent gate needs these bodies to show what can actually
+    // run, not just the whitelisted name. Collected on npm's hook naming for
+    // every manager; the shape comment above says why, and what that does and
+    // doesn't cover.
     const bodies = Object.fromEntries(
       names.flatMap((n) => [`pre${n}`, n, `post${n}`]
         .filter((k) => typeof scripts[k] === "string")
