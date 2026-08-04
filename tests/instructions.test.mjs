@@ -151,6 +151,32 @@ test("parseTopLevelList rejects a block-scalar indicator in every item form, not
   assert.deepEqual(parseTopLevelList("verify: |2-\n  npm test\n", "verify"), { items: [], present: true })
 })
 
+test("parseTopLevelList splits an inline list only on commas outside quotes", () => {
+  // A verify command carries its own commas often enough to matter, and splitting
+  // on every one of them tore a single command into fragments that `clean()` then
+  // unquoted into separately runnable strings — half a command, plus a stray tail
+  // the gate would show and a shell would try to execute.
+  assert.deepEqual(
+    parseTopLevelList('verify: ["nyc --reporter=text,lcov npm test", npm run lint]\n', "verify"),
+    { items: ["nyc --reporter=text,lcov npm test", "npm run lint"], present: true },
+  )
+  assert.deepEqual(
+    parseTopLevelList(`verify: ['npm test -- --grep "parse,dedup"', make lint]\n`, "verify"),
+    { items: ['npm test -- --grep "parse,dedup"', "make lint"], present: true },
+  )
+  // Unquoted commas still separate — a plain scalar cannot contain one in YAML's
+  // flow context, so this is the form the old behaviour got right.
+  assert.deepEqual(parseTopLevelList("verify: [npm test, npm run lint]\n", "verify"), {
+    items: ["npm test", "npm run lint"],
+    present: true,
+  })
+  // An unterminated quote yields one item that won't run, not several that will.
+  assert.deepEqual(parseTopLevelList('verify: ["npm test, npm run lint]\n', "verify"), {
+    items: ['"npm test, npm run lint'],
+    present: true,
+  })
+})
+
 test("loadDisabledLenses reads the disable list from REVIEW.yaml", () => {
   const yaml = "disableDefaultLenses:\n  - performance\ninstructions:\n  - name: X\n    instructions: y\n"
   assert.deepEqual(loadDisabledLenses("/repo", { existsSync: () => true, readFileSync: () => yaml }), ["performance"])

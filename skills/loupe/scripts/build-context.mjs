@@ -270,6 +270,39 @@ export function loadCustomInstructions(repo, deps = { readFileSync, existsSync }
 // holds for **every** form, not just the bare-scalar one: an indicator can
 // also arrive as an inline-list element (`verify: [|, npm test]`) or as a
 // sequence item (`- |`), so the check lives where items are added.
+// Splits an inline-list body on the commas that are actually separators — the
+// ones outside quotes. A verify command carries commas of its own often enough
+// to matter (`npm test -- --grep "parse,dedup"`, `nyc --reporter=text,lcov`),
+// and a bare `.split(",")` tears one command into fragments that `clean()` then
+// unquotes into things a shell will still run: half a command, plus a stray
+// `dedup"` it would try to execute. Quote tracking is the same shallow model
+// `stripInlineComment` already uses on the same text, deliberately: no nesting,
+// and **no escape handling**, so a backslash-escaped quote inside a
+// double-quoted item (`"--grep \"a,b\""`) closes the quote early and splitting
+// resumes. Matching that function matters more than covering the case —
+// `unquote` cannot unescape it either, so handling it here alone would only
+// move where the same string comes out wrong. An unterminated quote absorbs the
+// rest of the line into a single item, which fails toward one unrunnable string
+// rather than several runnable ones.
+function splitInlineItems(body) {
+  const out = []
+  let cur = "", quote = null
+  for (const ch of body) {
+    if (quote) {
+      cur += ch
+      if (ch === quote) quote = null
+    } else if (ch === '"' || ch === "'") {
+      quote = ch
+      cur += ch
+    } else if (ch === ",") {
+      out.push(cur)
+      cur = ""
+    } else cur += ch
+  }
+  out.push(cur)
+  return out
+}
+
 export function parseTopLevelList(text, key) {
   const out = []
   let present = false
@@ -296,7 +329,7 @@ export function parseTopLevelList(text, key) {
     // itself, or `["[]"]` — an opt-out read back as an opt-in).
     const line = stripInlineComment(raw.replace(/\r$/, ""))
     const inline = line.match(inlineRe)
-    if (inline) { present = true; for (const p of inline[1].split(",")) push(p); inList = false; continue }
+    if (inline) { present = true; for (const p of splitInlineItems(inline[1])) push(p); inList = false; continue }
     if (blockRe.test(line)) { present = true; inList = true; continue }
     if (inList) {
       // A document separator ends the list — it is not an item. Checked before
