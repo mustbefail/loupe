@@ -310,7 +310,7 @@ On iteration 0 only, write this call's `changedFiles` array verbatim to
 `state.changedFiles` right after parsing it, and never rewrite it on any
 later iteration. This is the one persisted record of what the reviewers
 were actually handed at the start of the run: Step 6's fixes are free to
-touch a companion file none of them names (Step 6 item 1 permits it), and
+touch a companion file none of them names (Step 6 fix item 1 permits it), and
 `state.changedFiles` is what lets Step 10 tell such a file apart from one a
 lens actually saw, even after a session restart wipes this iteration's own
 conversation context.
@@ -653,6 +653,12 @@ Skip both entirely when `--no-verify` was given or the resolved command list
 from Step 2 is empty; there is then nothing to consent to and no baseline to
 take, and Step 7 will skip too.
 
+This step holds **two** independently numbered lists: the three gate items
+directly below, cited everywhere as **gate item 1–3**, and the per-finding
+dispatch list further down, cited as **fix item 1–4**. A bare "Step 6 item 3"
+resolves to two different things — never write one, in this file or the
+references.
+
 1. **Disclose.** Print the resolved command list verbatim, with its `source`,
    and state that these commands come from the reviewed repository and will
    be executed. State plainly what was and wasn't resolved for *this*
@@ -837,7 +843,7 @@ take, and Step 7 will skip too.
 
 Immediately before the loop below dispatches anything — i.e. before its very
 first executor call this iteration, regardless of how many of that first
-batch run in parallel per item 2 — record `state.treeFingerprint`: a hash of
+batch run in parallel per fix item 2 — record `state.treeFingerprint`: a hash of
 the current `git -C <repo> diff` output (e.g. `git -C <repo> diff | sha1sum`), overwriting
 whatever the field held before. This is the pre-dispatch snapshot Step 7's
 third skip condition needs to tell whether this iteration's fixes changed the
@@ -846,7 +852,8 @@ prior snapshot to compare it to cannot answer that question by itself.
 
 Then, for each key in `fixQueue` (severity always clears the current
 `--severity-gate` by construction — that's what got it into `actionable`
-in the first place):
+in the first place) — these are the **fix items**, numbered independently of
+the gate items above:
 
 1. Dispatch `executor`, `model: sonnet`, with: the finding's `file`,
    `old_line`/`new_line`, `severity`, `category`, `comment`, and
@@ -1006,7 +1013,7 @@ staying silent about a skipped gate:
   immediately before this iteration's first executor dispatch, compared
   against a freshly computed hash of the current `git -C <repo> diff`; this is not
   inferred from Step 6's confirmation: a fix attempt can edit the finding's
-  file and still fail confirmation (Step 6 items 3–4), so "confirmed" and
+  file and still fail confirmation (Step 6 fix items 3–4), so "confirmed" and
   "changed the tree" are not the same test, and only a genuinely untouched
   tree hashes identical to that fingerprint. Bare `git diff` alone has
   nothing to compare against here — by default it already reflects the
@@ -1240,7 +1247,7 @@ code shifts what the next pass's reviewers see).
 If `stop` is true: first, if a baseline was ever taken and Step 7 ever
 skipped a command as pre-existing (Step 7 item 1), run each such command
 exactly once more here — under the same wall-clock cap, allowlisted
-environment, and reviewed-repo root Step 6 item 3 (Baseline) defines, which
+environment, and reviewed-repo root Step 6 gate item 3 (Baseline) defines, which
 extends those constraints by pointer to this site — and update the last
 `state.verifyRuns` entry's `results` with its real verdict. This is the one
 re-run Step 7 item 1 defers to this point. Then **recompute that same
