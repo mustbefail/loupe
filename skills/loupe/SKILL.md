@@ -36,7 +36,7 @@ Parsed from the skill invocation's argument string. All are optional.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--repo <path>` | the current working directory | The repository to review. Passed through to `build-context.mjs --repo <path>` when given; when omitted, `build-context.mjs` defaults it to its own `process.cwd()`, which is the reviewed repo whenever this skill was invoked from inside it (the ordinary case). Once resolved, this path is "the reviewed repo" for the rest of this file — every git command, every verification command, and the scratchpad namespace (Step 1) all operate against it, not necessarily the orchestrator's own working directory. |
+| `--repo <path>` | the current working directory | The repository to review. Passed through to `build-context.mjs --repo <path>` when given; when omitted, `build-context.mjs` defaults it to its own `process.cwd()`, which is the reviewed repo whenever this skill was invoked from inside it (the ordinary case). Once resolved, this path is "the reviewed repo" for the rest of this file — every git command, every verification command, and the state-directory namespace (Step 1) all operate against it, not necessarily the orchestrator's own working directory. |
 | `--base <ref>` | the reviewed repo's default branch | The ref to diff against. Passed through to `build-context.mjs --base <ref>` when given; when omitted, let `build-context.mjs`'s own default-branch detection resolve it (see Step 2 — do not reimplement that detection here). |
 | `--max-iterations <n>` | `3` | Hard cap on the number of review→fix passes. |
 | `--fix` / `--no-fix` | `--fix` | Whether Step 6 dispatches the executor. Under `--no-fix`, actionable findings are never attempted and still surface in the final report's Deferred section as "attempted, unresolved" (per `output-format.md` §5 — that phrase covers both "attempted and failed" and "never attempted"). **`--fix` being the default doesn't mean a given run fixes anything:** it only dispatches for findings that already cleared `--severity-gate` (see that row below) and weren't rejected, and on a codebase already in decent shape that set is often empty. Don't treat "often" as a guarantee, though — see the `--severity-gate` row for why the same diff can go either way from one run to the next. |
@@ -99,11 +99,11 @@ Parsed from the skill invocation's argument string. All are optional.
 - **Verification never reverts anything.** Step 7 repairs forward or
   reports — it has no revert path at all, under the git prohibitions above.
 - **Everything stays local.** `loupe` reads and writes only the working
-  tree and its own session-scratchpad state file. The only network egress
-  is whatever Claude Code's own subagent calls already make — `loupe`
-  itself never phones out, logs to an external service, or writes the
-  reviewed repo's contents anywhere but the scratchpad state file. **This
-  describes `loupe`'s own behaviour, and does not extend to the
+  tree and its own durable, per-user state directory (Step 1). The only
+  network egress is whatever Claude Code's own subagent calls already
+  make — `loupe` itself never phones out, logs to an external service, or
+  writes the reviewed repo's contents anywhere but that state directory.
+  **This describes `loupe`'s own behaviour, and does not extend to the
   verification commands**, which are the repo's code: a `test` script can
   reach the network and write outside the tree, and no rule here constrains
   it. That is exactly why running one requires consent (above).
@@ -129,18 +129,70 @@ Parsed from the skill invocation's argument string. All are optional.
    before spending a process launch on it.)
 
 2. Initialize a fresh state file for this run — `loupe` does not resume a
-   previous invocation's state. Location: **your own session scratchpad
-   directory** (the temp/working directory your runtime designates for
-   throwaway files — never inside the reviewed repository's working tree,
-   so it never needs a `.gitignore` entry and never risks being
-   accidentally committed). Namespace it by the reviewed repo's absolute
-   path (the `--repo` path, resolved to absolute, when given; the
-   orchestrator's own working directory otherwise — see the `--repo`
-   argument row and Step 2) so concurrent reviews of different repos in the
-   same session don't collide, e.g.:
-   ```
-   <scratchpad>/loupe/<abs-repo-path-with-/-replaced-by-->/state.json
-   ```
+   previous invocation's state, and nothing below changes that: this step
+   still writes the fresh initial contents below every time,
+   unconditionally, regardless of whether a state file from an earlier run
+   of the same repo already sits at the location below.
+
+   Location: a **durable location outside the reviewed repository (and
+   outside any other repository the orchestrator's own session happens to
+   be running in)**, namespaced by the reviewed repo's absolute path and
+   nothing else.
+
+   An earlier version of this step put the state file in **the runtime's
+   own session scratchpad directory** — the temp/working directory a
+   runtime designates for throwaway files. `throwaway` turned out to be
+   literal: mid-run, on a long multi-iteration review of a large
+   third-party repo, the session restarted and the whole directory was
+   wiped — `state.json`, the per-lens payload files (Step 3), the
+   build-context output, every lens's findings, and the judge's verdict,
+   all gone at once. The run survived only because the findings were still
+   sitting in the orchestrator's own conversation context and could be
+   retyped by hand. The exposure is worst exactly where the loop matters
+   most: a long multi-iteration run on a large repo is both the case the
+   iteration cap exists for and the case most likely to span a restart.
+   Three constraints follow, each load-bearing:
+
+   - **Not inside the reviewed repo.** This was already the rule here, but
+     the reason is stronger than "it never needs a `.gitignore` entry and
+     never risks being accidentally committed" (still true, and still
+     worth having): `loupe` reviews that repo's *working tree*, so a state
+     file living inside it would land in its own diff and get handed
+     straight to the reviewer subagents it's tracking.
+   - **Not keyed by session, run, or process id.** A restarted session gets
+     a new session id, so any key derived from the session, the run, or
+     the process would make the very file that's supposed to survive the
+     restart unfindable after it — which is the failure this location
+     change exists to fix. The path must be derivable from the reviewed
+     repo's identity alone.
+   - **Durable across restarts.** A user-level state directory, not a temp
+     directory a runtime is free to wipe between sessions. Respect
+     `XDG_STATE_HOME` when the environment sets it; fall back to
+     `~/.local/state` otherwise. Namespace under that by the reviewed
+     repo's absolute path (the `--repo` path, resolved to absolute, when
+     given; the orchestrator's own working directory otherwise — see the
+     `--repo` argument row and Step 2) so concurrent reviews of different
+     repos don't collide, e.g.:
+     ```
+     ${XDG_STATE_HOME:-$HOME/.local/state}/loupe/<abs-repo-path-with-/-replaced-by-->/state.json
+     ```
+     A runtime whose own conventions differ should substitute its own
+     equivalent durable per-user location — the requirement is durability
+     plus repo-derived naming, not this exact path. Call the resolved
+     directory (everything up to but not including `state.json`)
+     `<state-dir>` for the rest of this file; every other file this skill
+     writes outside the reviewed repo — the per-lens payload files (Step
+     3), the scratch file Step 4 dedups from — lives alongside
+     `state.json` in this same `<state-dir>`.
+
+   Say plainly what this buys and what it doesn't, in both directions:
+   durability makes a run's state inspectable and lets it survive a
+   session restart; it does **not** make `loupe` resume. A `state.json`
+   left behind by an earlier run against this same repo is **overwritten,
+   not continued** — see the first paragraph above. Building resume —
+   reading that leftover file back and picking up where it left off — is
+   new behaviour and out of scope here.
+
    Write the initial contents exactly as:
    ```json
    { "iteration": 0, "seen": [], "findings": [], "verifyCommands": null, "verifyConsent": null, "verifyBaseline": null, "verifyRuns": [], "treeFingerprint": null }
@@ -326,8 +378,8 @@ Each reviewer's prompt must be self-contained and include:
 3. This lens's `files` array, passed as a **file path**, not pasted into
    the prompt: write `lenses[<name>].files` — still the same shape,
    `[{ path, diff, original }]` — to
-   `<scratchpad>/loupe/<abs-repo-path-with-/-replaced-by-->/lens-<name-with-/-replaced-by-->-files.json`
-   (the same namespaced scratchpad directory Step 1's `state.json` lives
+   `<state-dir>/lens-<name-with-/-replaced-by-->-files.json`
+   (the same durable, per-repo `<state-dir>` Step 1's `state.json` lives
    in), and give the reviewer that path, instructing it to read the file
    rather than handing it the array itself. Do this because everything the
    orchestrator pastes into a prompt verbatim it pays for twice — once
@@ -381,9 +433,9 @@ key = sha1(file + ":" + new_line + ":" + category)
 ```
 This must be computed by real code, never estimated by reasoning (an LLM
 cannot reliably compute a SHA1 hash). Do it in one batch: write the
-merged finding list to a scratch file next to `state.json`, then run a
-short Node script to attach `key` to every entry and write the result back
-out, e.g.:
+merged finding list to a file alongside `state.json` in the same
+`<state-dir>` (Step 1), then run a short Node script to attach `key` to
+every entry and write the result back out, e.g.:
 ```
 node -e '
   const fs = require("fs"), crypto = require("crypto");
@@ -393,7 +445,7 @@ node -e '
     f.key = crypto.createHash("sha1").update(f.file + ":" + f.new_line + ":" + f.category).digest("hex");
   }
   fs.writeFileSync(path, JSON.stringify(findings));
-' <scratchpad>/loupe/<abs-repo-path-with-/-replaced-by-->/fresh-findings.json
+' <state-dir>/fresh-findings.json
 ```
 Read the file back — every finding now carries `key`.
 
@@ -704,6 +756,87 @@ in the first place):
    genuinely requires a companion change (e.g. a caller that must be
    updated too), and — pasted through verbatim, not paraphrased — the git
    prohibitions from the safety rules above.
+
+   That much is not enough on its own. Across three runs against a
+   third-party repo, the orchestrator had to hand the executor
+   requirements this brief doesn't otherwise carry, and in each case the
+   added requirement is the only reason the fix wasn't shipped wrong. Tell
+   the executor all of the following, as requirements rather than
+   suggestions:
+
+   - **`old_line`/`new_line` is an orientation hint, not an address.** It
+     was computed from the diff `build-context.mjs` built at the start of
+     this iteration, and it can already be stale by the time this prompt
+     is written, for two independent reasons — both observed in live runs,
+     so tell the executor both rather than let it assume only one kind of
+     drift is possible. First, same-file serialization (item 2 below)
+     means fix 2..N in a file still carry coordinates computed before fix
+     1 landed: one run dispatched seven same-file findings this way in
+     sequence; another saw two fixes shift the file by 10 lines. Second,
+     reviewers anchor the same finding to different lines even when
+     nothing in the file changed at all: across two runs over a
+     byte-identical file, one reviewer anchored a finding at `:152`,
+     another at `:164`; within a single run, one finding moved from
+     `:138` to `:137` with no edit above it in between. The line is a
+     model judgement about where the comment belongs, not a property of
+     the code — so do not "fix" this by having the orchestrator recompute
+     a fresher line number before dispatch; a recomputed number is still a
+     guess about where the reviewer meant, only a newer guess. Instead,
+     require the executor to **locate the target by content** — the code
+     the `comment`/`suggestion` actually describes — and treat the given
+     line only as a starting point for that search, never as the address
+     to edit.
+   - **The finding's `comment` and `suggestion` are claims, not
+     established facts.** Where the finding asserts a measurement, the
+     executor must measure it before relying on it; where it asserts a
+     behaviour, it must reproduce that behaviour before trusting it. A
+     `maintainability` finding once asserted that restoring named
+     constants "costs nothing measurable" in a hot path; told to measure
+     rather than assume, the executor found the direct form cost **+1.90%**
+     and shipped a hoisted form instead (−0.30%, noise) — the finding's
+     own claim was simply false. **If verifying shows the finding is
+     wrong, report that instead of implementing it** — a refuted finding
+     is a more valuable outcome to hand back than a fix built on a false
+     premise.
+   - **A green Step 7 run afterward is not evidence the fix is correct —
+     only that nothing the suite covers broke.** Where a fix's
+     correctness rests on something no command in the resolved verify
+     list actually exercises, the executor must verify that directly
+     itself and say how. A fix replacing a per-cell closure with a 12×12
+     lookup table rested entirely on the table reproducing every mask
+     function exactly; told to verify that rather than trust it, the
+     executor checked **250,632 coordinates** before shipping — had one
+     entry been wrong, the wrong mask would have been chosen, the emitted
+     QR code subtly corrupted, and nothing in the loop would have caught
+     it: no test covers mask selection, `tsc` cannot see it, and lint was
+     already red for unrelated reasons. A silently-swallowed exception
+     behind a `try`/`finally` fix, or a `subarray` view aliasing what the
+     caller assumed was an independent buffer, are the same class of
+     problem: correct-looking, green on every command, and wrong in a way
+     nothing here would ever surface.
+   - **For a missing-test-coverage finding, derive the expected values
+     from the specification or requirement the code is supposed to
+     satisfy — never from the code's own current output.** A test that
+     snapshots current behaviour passes both of `loupe`'s own checks —
+     this step's own confirmation that an edit landed (item 3 below), and
+     Step 7's regression gate — while pinning whatever bug already exists;
+     neither check can tell a snapshot test from one that actually
+     exercises the requirement. Told to derive expected values from the
+     spec instead of the code, one executor produced tests that would fail
+     against a broken implementation — a snapshot test would not have.
+   - **Do not do a queued neighbour finding's work, and do not undo an
+     earlier fix from this run.** Tell the executor what this run has
+     already changed in this same file so far, if anything — which
+     finding and a one-line gist of its fix, drawn from `state.findings`
+     entries with `fixedInIteration` set for this file — so it preserves
+     those edits instead of reverting them while addressing this one.
+   - **Do not run any formatter or linter that rewrites files.** Step 7
+     owns verification; a command that mutates files here corrupts the
+     tree comparison this step's own confirmation (item 3 below) and Step
+     7's gate both depend on.
+   - **Report what was verified and how**, not only what was changed — the
+     measurement, the reproduction, or the spec-derived basis behind the
+     fix, so item 3 below has something concrete to confirm against.
 2. **Same-file serialization:** if two or more keys in `fixQueue` target
    the same file, dispatch those sequentially — one executor call must
    complete before the next starts on that file — so concurrent edits
@@ -846,7 +979,16 @@ regression a fix just introduced.
    from this iteration in place rather than undoing it to make the command
    pass; to add no unrelated changes; and — pasted through verbatim, the
    same words Step 6's fix loop passes through when it dispatches an
-   executor — the git prohibitions from the safety rules above.
+   executor — the git prohibitions from the safety rules above. Extend to
+   this dispatch, by pointer rather than by repetition, the parts of Step
+   6 item 1's requirements that still apply to a repair rather than a
+   fresh finding: a claim behind the repair needs verifying, not trusting;
+   a green re-run afterward (item 4 below) only proves what this command
+   chain covers, not that the repair is correct where nothing in that
+   chain looks; no formatter or linter that rewrites files; and reporting
+   what was verified and how. The snapshot-test-vs-spec item and the
+   stale-line-number item don't transfer — this dispatch isn't handed a
+   missing-coverage finding, or any line number, to begin with.
 
    The repair executor gets exactly one attempt, and nothing guarantees it
    edits anything. Check that against a fresh hash of the current `git -C <repo> diff`
