@@ -291,8 +291,8 @@ executor and lands in the report's Rejected section (§5), not Fixed.
 ## 5. Final human-facing report
 
 Printed once, at the end of the loop (whichever stop condition fired), never
-before. Three finding buckets, a Lenses section, a Verification section, and a
-diff pointer. The three buckets are built from the
+before. Three finding buckets, a Lenses section, an Unreviewed files section,
+a Verification section, and a diff pointer. The three buckets are built from the
 merged, deduped findings across all iterations (§2) and are disjoint AND
 total — every finding lands in exactly one of them — by this priority
 order (first match wins):
@@ -347,22 +347,49 @@ finding is still unresolved (fix attempted and failed, or not yet
 attempted) is `SKILL.md`'s call, not this contract's — this bucket only
 defines where such a finding is reported if that happens.
 
+**Bullet length.** A reviewer's `comment` (§1) is written for a human doing
+a close read of one finding, not for a report listing twenty of them —
+five to ten lines each is ordinary, and one measured run's three buckets
+came to 18.7 KB of bullet text from `comment` alone. Every bullet below
+renders a bounded slice of `comment` instead of the full text: its first
+sentence, or roughly its first 200 characters, whichever reads better for
+that finding — prefer the first sentence when it is itself no longer than
+that, fall back to the character cut when the first sentence runs past it.
+Whenever what's rendered isn't the whole `comment`, append an explicit
+truncation marker (`… [truncated]`) so the cut is visible rather than
+silently absorbed into the prose — a reader must be able to tell a
+finding was long from one that was actually this short. This governs
+`comment` alone; every per-severity rule below it — the `Suggestion:`
+line, the gate-excluded suffix, the pure-deletion locator, which bucket a
+finding lands in — is unchanged. The full, untruncated `comment` for every
+finding in this report, fixed, deferred, or rejected, still exists: it is
+`state.findings[].comment`, at the durable state file `SKILL.md` Step 1
+defines (`<state-dir>/state.json`, which survives a session restart since
+that step's own change). State that pointer once, in the report itself, so
+a reader who needs the full text of a bullet knows where to find it — see
+the template below.
+
 ```markdown
 ## loupe review report
 
+Every `comment` below is truncated (see "Bullet length" above); the full
+text for every finding is in `state.findings` at `<state-dir>/state.json`
+(`SKILL.md` Step 1).
+
 ### Fixed (N)
-- `src/user.ts:42` [high/sql-injection] <comment> — fixed this iteration.
+- `src/user.ts:42` [high/sql-injection] User input is concatenated directly into the query string without parameterization… [truncated] — edit landed, and the resolved verify commands didn't regress it. Executor reported verifying: ran the parameterized query against 12 crafted payloads, all rejected correctly.
+- `src/parser.ts:88` [high/null-deref] <comment, truncated> — edit landed, and the resolved verify commands didn't regress it. Executor reported verifying: nothing beyond the edit landing.
 
 ### Deferred (N)
-- `src/order.ts:17` [medium/n-plus-one] <comment>
+- `src/order.ts:17` [medium/n-plus-one] <comment, truncated>
   Suggestion: replace `from` with `to`.
-- `src/session.ts:9` [high/missing-null-check] <comment> — excluded by `--severity-gate blocker`.
-- `src/cache.ts:23` [blocker/race-condition] <comment> — attempted, unresolved.
-- `src/auth.ts:31` [high/missing-authz] <comment> — applied, verification regressed.
+- `src/session.ts:9` [high/missing-null-check] <comment, truncated> — excluded by `--severity-gate blocker`.
+- `src/cache.ts:23` [blocker/race-condition] <comment, truncated> — attempted, unresolved.
+- `src/auth.ts:31` [high/missing-authz] <comment, truncated> — applied, verification regressed.
 - `src/mask.js:88` [medium/correctness] findBestMask mutates the caller's matrix without a try/finally, corrupting it if a write throws mid-iteration — judge said the matrix stays bit-identical across versions 1–40; overridden: that check only covered the non-throwing path.
 
 ### Rejected (N)
-- `src/util.ts:8` [low/naming] <comment> — judge: <rejected[].reason for this key>
+- `src/util.ts:8` [low/naming] <comment, truncated> — judge: <rejected[].reason for this key>
 
 ### Lenses
 Ran: correctness, performance, maintainability.
@@ -371,6 +398,16 @@ report speaks for that concern.
 **Replaced by the reviewed repo's own `REVIEW.yaml`: security.** A custom lens
 under this same name ran in its place; nothing in this report speaks for
 `loupe`'s own base security checklist.
+
+### Unreviewed files
+The following files entered this run's diff through loupe's own fixes and
+were never handed to any reviewer lens; nothing in this report speaks for
+their contents:
+- `lib/matrix/QrMatrix.js`
+- `lib/matrix/format.js`
+
+(When this set is empty: `None — every file in this run's final diff was
+seen by at least one reviewer lens.`)
 
 ### Verification
 Commands (from package.json, authorized by you) — untrusted repo-controlled
@@ -392,8 +429,32 @@ commit the changes yourself.
 ```
 
 - **Fixed** — findings that were `actionable` under the gate in force when
-  they were judged, dispatched to the executor, and confirmed applied.
-  Bullet text is the finding's own `comment` (§1).
+  they were judged, dispatched to the executor, and confirmed applied (§5
+  rule 2 above defines membership; what follows is about what the label
+  communicates, not who qualifies for it). **"Fixed" is not a correctness
+  claim.** It establishes exactly two things: the edit landed in the
+  working tree, and the resolved verify commands (`SKILL.md` Step 7) did
+  not regress because of it. It does **not** establish that the fix is
+  correct wherever those commands don't look — and for many fixes, that's
+  most of what makes the fix right: a lookup table's values against every
+  input it can take, a `finally` that must not swallow its exception, a
+  `subarray` that must not alias a buffer the caller assumed was
+  independent. `SKILL.md` Step 6 item 1 requires the executor to verify
+  that kind of thing directly and report what it did; that report —
+  carried onto the finding as `executorVerification` (`SKILL.md` Step 6
+  item 3) — is the only evidence anywhere in this loop that such a fix is
+  correct, and this bullet is where it finally surfaces instead of being
+  thrown away. Render it as a trailing clause: `Executor reported
+  verifying: <executorVerification>.` Frame it as exactly that — the
+  executor's own account, never reproduced or checked by `loupe` itself —
+  so a reader doesn't mistake it for something the loop established on its
+  own authority the way the "edit landed" and "commands didn't regress"
+  parts are. When `executorVerification` records that the executor
+  verified nothing beyond the edit landing, render that plainly rather
+  than dropping the clause: an absent clause reads as "nothing to report",
+  when "nothing was verified" is the fact actually worth surfacing. The
+  rest of the bullet text is the finding's own `comment` (§1), bounded per
+  the bullet-length rule above.
 - **Deferred** — the catch-all bucket (§5 rule 3): everything not Rejected
   and not Fixed. In practice this covers four cases: (1) findings of any
   severity excluded from `actionable` by the current `--severity-gate` and
@@ -464,6 +525,28 @@ commit the changes yourself.
   `loupe`'s own base checklist on that concern — but stop short of saying
   nothing ran under the name at all, since the repo's own instructions may
   still have produced real findings under it.
+- **Unreviewed files** — always printed, built from the set difference
+  `SKILL.md` Step 10 computes between the files the working tree's diff
+  currently touches and `state.changedFiles` (the `changedFiles` set Step 2
+  captured and persisted on iteration 0). A fix Step 6 dispatches is
+  permitted to touch a companion file that no lens's `files` array ever
+  named — a caller that genuinely needs updating alongside the function it
+  calls, for instance (`SKILL.md` Step 6 item 1) — and that companion
+  file's contents are then something no lens ever saw: not this run, and,
+  under `--max-iterations 1` or any run whose loop stops before another
+  re-diff, not ever. Name every file in that difference and say plainly
+  that nothing in this report speaks for it — its correctness is exactly
+  as unverified by `loupe` as if the tool had never touched it. **When the
+  difference is empty, print a line saying so explicitly** rather than
+  omitting the section: an absent section reads as "everything in the
+  diff was reviewed", which is precisely the false impression this section
+  exists to prevent — like Lenses above and Verification below, this
+  section always prints, an empty result included, and is never dropped
+  for having nothing to say. When this run stopped after a single iteration (`--max-iterations
+  1`, or the no-progress/judge-stop guard firing on iteration 0), say that
+  too alongside a non-empty list: a single-iteration run never re-diffs, so
+  any file named here could not have been picked up by a lens on a later
+  pass either — for this run, the gap is permanent, not merely "not yet".
 - **Verification** — always printed, built from `state.verifyBaseline` and
   the last entry of `state.verifyRuns` (`SKILL.md` Step 6/7). Open with
   the resolved command list and where it came from. Those command strings are

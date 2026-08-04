@@ -195,11 +195,22 @@ Parsed from the skill invocation's argument string. All are optional.
 
    Write the initial contents exactly as:
    ```json
-   { "iteration": 0, "seen": [], "findings": [], "verifyCommands": null, "verifyConsent": null, "verifyBaseline": null, "verifyRuns": [], "treeFingerprint": null }
+   { "iteration": 0, "seen": [], "findings": [], "verifyCommands": null, "verifyConsent": null, "verifyBaseline": null, "verifyRuns": [], "treeFingerprint": null, "changedFiles": null }
    ```
    `findings` will accumulate one entry per dedup key across the whole run
    (schema below, Step 4/5/6) — this is what drives the no-progress guard
-   and the final report; `seen` is only ever a flat array of keys.
+   and the final report; each entry gains `executorVerification` once Step 6
+   confirms its fix — a short, one-or-two-line gist of what the executor's
+   own report said it verified and how, or a note that it verified nothing
+   beyond the edit landing, when that is what the executor reported; this is
+   the only record the loop keeps of the evidence (if any) behind a "Fixed"
+   label, and Step 10/`output-format.md` §5 render it rather than letting a
+   fix's confirmed-applied status alone imply correctness. `seen` is only
+   ever a flat array of keys. `changedFiles` is filled once, in Step 2 on
+   iteration 0, right after that call's `changedFiles` array is parsed, and
+   never rewritten — it is what lets Step 10 name a file that entered the
+   diff through `loupe`'s own fixes without ever being handed to a lens (see
+   Step 2 and Step 10).
    `verifyCommands` is filled once, in Step 2 on iteration 0, right after
    the command list is resolved — `{ commands, source, skipped }` — and
    never rewritten; it is what lets Step 10 print the command list that
@@ -295,6 +306,15 @@ field the consent gate tests (Step 6) — read that boolean rather than
 inferring trust from `source` — and a non-null `source` with an empty
 `commands` is a deliberate opt-out, not a failure to find anything.
 
+On iteration 0 only, write this call's `changedFiles` array verbatim to
+`state.changedFiles` right after parsing it, and never rewrite it on any
+later iteration. This is the one persisted record of what the reviewers
+were actually handed at the start of the run: Step 6's fixes are free to
+touch a companion file none of them names (Step 6 item 1 permits it), and
+`state.changedFiles` is what lets Step 10 tell such a file apart from one a
+lens actually saw, even after a session restart wipes this iteration's own
+conversation context.
+
 Resolve all of this once, on iteration 0, and reuse that exact list for the
 whole run (do not re-read it from later iterations' output, so the gate can't
 shift mid-run). Write the resolved `{ commands, source, skipped }` to
@@ -313,7 +333,13 @@ all:
   false here by construction, so the gate never prints a `package.json`
   script's body — disclosed as if authoritative — for a `--verify` command
   that will actually run instead, and the shape comment's invariant
-  (`bodies` only when `source` is `"package.json"`) still holds.
+  (`bodies` only when `source` is `"package.json"`) still holds. Step 6
+  item 1 separately resolves a body for a `--verify` command that itself
+  invokes a package-manager script — that is new text it computes at
+  disclosure time from the `--verify` command string, not this discarded
+  field, and it is not written into `bodies`: this invariant, and the
+  discard above, are both about the carried-over body of the command
+  `--verify` *replaced*, and neither is what that resolution reads from.
 - If `--no-verify` was given, treat the command list as empty for the whole
   run; Step 6's consent gate and baseline, and Step 7, are all skipped.
 
@@ -620,15 +646,50 @@ take, and Step 7 will skip too.
    resolve. So print **every** rule you find for that target across the
    makefile(s) you can see, not only the first one, and say that even the
    full set is still an incomplete picture, not a confirmed command. The
-   other two sources need neither this caveat nor this
-   reading, because neither resolves anything away: a `source:
+   `REVIEW.yaml` source needs neither this caveat nor this
+   reading, because it resolves nothing away: a `source:
    "REVIEW.yaml"` command **is** its `verify:` entry — an unfiltered shell
    string, per the safety rules — so the command list already printed
-   above is the whole body, and a `source: "--verify"` command is the
-   string the human themselves typed, which item 2 doesn't even ask them to
-   confirm. Saying "no body was resolved" about either of those two would
-   tell the human something was hidden when nothing was. Even under
-   `"package.json"`, say
+   above is the whole body. Saying "no body was resolved" about it would
+   tell the human something was hidden when nothing was.
+
+   A `source: "--verify"` command is the string the human themselves typed,
+   which item 2 doesn't even ask them to confirm — that settles
+   *authorization*. For most `--verify` commands it settles *disclosure*
+   too, for the same reason as `REVIEW.yaml`: the string already is the
+   whole thing that will run. **One shape of `--verify` command is the
+   exception: a package-manager invocation of a named script in the
+   reviewed repo's own `package.json`** — `npm run <name>`, the bare `npm
+   <name>` alias for `test`/`start`/etc., `npm test` itself, `yarn <name>`,
+   `yarn run <name>`, `pnpm run <name>`, or the equivalent for whichever
+   manager the repo's lockfile indicates. The human typed that string, but
+   typing `npm run test` is not the same as having seen what the `test`
+   script's body actually does — precisely the gap the `package.json`-
+   source disclosure above exists to close, and being the one who typed the
+   invocation doesn't close it on its own. So: when a `--verify` command
+   takes this shape, resolve and print that script's body the same way —
+   read it straight out of the reviewed repo's own `package.json` at
+   disclosure time, pre/post hooks included, under the same redaction and
+   truncation rules already applied to a `package.json` body above. Compute
+   this fresh, here, from the `--verify` command string itself; never from
+   `verify.bodies` — Step 2 discards that field entirely the instant
+   `--verify` is given, specifically so a body belonging to a command that
+   will not run is never printed as if it belonged to the one that will
+   (see Step 2). Keep it out of the `bodies` field's name too: Step 2's
+   shape comment fixes `bodies` as present only when `source` is
+   `"package.json"`, and a `--verify` run's `source` is `"--verify"` by
+   construction, so a script body resolved here is a separate piece of
+   disclosure text, not a value for that field — reusing the name would put
+   that invariant back in question for no reason. And this still asks
+   nothing: printing the body closes a disclosure gap, not an authorization
+   one — the human already authorized running the command by typing it, so
+   nobody should "fix" this by adding a prompt here. Every other `--verify`
+   command — a raw shell command, a direct binary invocation, a `make`
+   target — carries no such gap, for the same reason `REVIEW.yaml` doesn't:
+   the string already is the whole thing being authorized, and needs no
+   further resolution.
+
+   Even under `"package.json"`, say
    that a body is resolved exactly one level deep: if a script's own body
    shells out to another command (e.g. a `test` script running `npm run
    test:e2e` or `make check`), that nested target is not whitelisted and its
@@ -824,6 +885,24 @@ in the first place):
      exercises the requirement. Told to derive expected values from the
      spec instead of the code, one executor produced tests that would fail
      against a broken implementation — a snapshot test would not have.
+   - **When a fix adds or changes tests, confirm the resolved verify
+     commands actually execute them — never assume a command named `test`
+     runs *these* tests.** A whitelisted name can resolve to a command
+     narrower than its name suggests: `npm test` in one reviewed repo ran
+     `node --test test/unit-tests.js` — one named file, not a directory
+     glob — so a fix adding `test/mask-tests.js` alongside it would never
+     run at all. A test runner given a target it doesn't match exits 0
+     having run nothing new, and neither this step's own confirmation
+     (item 3 below) nor Step 7's regression gate can tell that apart from a
+     passing suite that actually covered the change — both would report
+     green. The concrete check: after the change, the resolved test
+     command's own reported count of tests run must have gone up by the
+     number of tests the fix added; read that count off the runner's own
+     summary line, don't infer it from a green exit code. One executor
+     avoided this by reading the existing test file before deciding where
+     to add its tests — that was a choice available to it on that repo, not
+     a guarantee available on every repo, so require the count check
+     regardless of which path an executor takes.
    - **Do not do a queued neighbour finding's work, and do not undo an
      earlier fix from this run.** Tell the executor what this run has
      already changed in this same file so far, if anything — which
@@ -845,11 +924,24 @@ in the first place):
 3. Confirm the fix: check that `git -C <repo> diff` now touches the finding's file
    in a way that addresses the comment (if a `suggestion` was given,
    confirm `from` no longer appears verbatim, or an equivalent change is
-   present). If confirmed: `status: "fixed"`, `fixedInIteration: N`. This
-   is a check that the edit **landed**, not that it is **correct** — that
-   a fix compiles, lints, and keeps the tests green is Step 7's job, and
-   `status: "fixed"` set here is still provisional until Step 7 has run
-   for this iteration.
+   present). If confirmed: `status: "fixed"`, `fixedInIteration: N`, and
+   `executorVerification` — a short, one-or-two-line gist of what the
+   executor's own report (item 1's closing requirement, above) said it
+   verified and how. This step does not re-run or re-derive that
+   verification; it only carries the executor's account of it forward onto
+   the finding, because that report is the only evidence anywhere in this
+   loop that the fix is correct where Step 7's commands don't look, and
+   right now nothing keeps it past this dispatch. If the executor's report
+   claimed no verification beyond the edit being in place, record exactly
+   that — an executor that verified nothing is a fact worth keeping on the
+   finding, not a reason to leave the field absent. This is a check that
+   the edit **landed**, not that it is **correct** — that a fix compiles,
+   lints, and keeps the tests green is Step 7's job, and `status: "fixed"`
+   set here is still provisional until Step 7 has run for this iteration;
+   `executorVerification` does not change that, it only records what
+   evidence exists for the "correct" question Step 7 can't fully answer
+   either (`output-format.md` §5 renders it on the Fixed bullet for exactly
+   this reason).
 4. If not confirmed: retry the executor once more within this same
    iteration with a corrective note describing what's still wrong. If
    still not confirmed after the retry: `status: "unresolved"`,
@@ -1134,7 +1226,7 @@ priority rules, the per-severity rendering (the gate-excluded suffix, the
 template are all specified there; do not duplicate or reinterpret them
 here.
 
-Four things this step must still do, beyond what §5 itself specifies:
+Five things this step must still do, beyond what §5 itself specifies:
 
 - Actually run `git -C <repo> diff --stat` — `<repo>` is the same reviewed
   repo Step 2 resolved, not necessarily the orchestrator's own working
@@ -1153,6 +1245,30 @@ Four things this step must still do, beyond what §5 itself specifies:
   a base lens whose name a repo-defined custom lens reused never ran either
   (the custom one wins, Step 2), so it must never be listed among the lenses
   that ran — see `output-format.md` §5 for the exact rendering.
+- Render the `### Unreviewed files` section by computing the set
+  difference the section needs, then handing it to `output-format.md` §5's
+  rendering for it. Get the "files the working tree now touches" side of
+  that difference by running, from the reviewed repo's root: `git -C
+  <repo> diff HEAD --name-only` for tracked changes (staged and unstaged
+  alike, relative to `HEAD`) plus `git -C <repo> ls-files --others
+  --exclude-standard` for new untracked files — the same tracked-plus-new-
+  untracked shape `--committed`'s own row (Step 2's arguments table)
+  already uses to describe working-tree mode. This is mechanical on
+  purpose: it does not require re-running `build-context.mjs` (Step 9
+  already says not to run Step 2 again), and it stays correct under
+  `--committed` too, because Step 6's fixes are *always* uncommitted
+  working-tree edits regardless of mode (the git prohibitions never let
+  `loupe` commit anything), so a fresh `diff HEAD`-plus-untracked read
+  always surfaces them. Diff that set against `state.changedFiles` — the
+  iteration-0 set Step 2 persisted there (see Step 1/Step 2) — and pass
+  the files present in the former but not the latter to §5's rendering.
+  Every file in that difference reached the working tree through one of
+  `loupe`'s own fixes (Step 6 permits a fix to touch a companion file no
+  lens's `files` array ever named) and was never in any lens's input, this
+  run or, if the loop already stopped, ever. Pass an empty list through
+  when the difference is empty rather than skipping the section — §5
+  renders that case explicitly, and skipping it here would silently drop
+  the "everything was reviewed" confirmation that case exists to give.
 - Render the `### Verification` section from `state.verifyBaseline` and the
   **last** entry in `state.verifyRuns`, per `output-format.md` §5 — plus
   `state.verifyConsent` and `state.verifyCommands` whenever the gate was
