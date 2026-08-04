@@ -12,6 +12,13 @@ function fakeFs(files) {
   }
 }
 
+// The two outcomes several tests below assert identically. Named once so the
+// repetition is by construction rather than by copy — the assertions stay whole-
+// object `deepEqual`s on purpose, since an unexpected extra key must fail. The
+// outcomes that differ per branch stay written out where they are asserted.
+const NOT_DETECTED = { commands: [], source: null, skipped: "not-detected", repoSupplied: false }
+const ALL_MODE = { commands: [], source: null, skipped: "all-mode", repoSupplied: false }
+
 test("parseDiff extracts added/modified/new/rename/binary records", () => {
   const raw = [
     "diff --git a/src/a.rb b/src/a.rb",
@@ -123,7 +130,7 @@ test("detectVerifyCommands defaults to npm and ignores non-whitelisted or blank 
   const fs = fakeFs({ "/repo/package.json": JSON.stringify({ scripts: { test: "node --test", deploy: "./ship.sh" } }) })
   assert.deepEqual(detectVerifyCommands("/repo", {}, fs).commands, ["npm run test"])
   const blank = fakeFs({ "/repo/package.json": JSON.stringify({ scripts: { test: "   " } }) })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, blank), { commands: [], source: null, skipped: "not-detected", repoSupplied: false })
+  assert.deepEqual(detectVerifyCommands("/repo", {}, blank), NOT_DETECTED)
 })
 
 test("detectVerifyCommands discloses each whitelisted script's own body plus its pre/post hooks", () => {
@@ -189,12 +196,12 @@ test("detectVerifyCommands resolves nothing the repo supplied under --all, inclu
   // a shell on the host, not to a reviewing model the way custom-lens
   // instructions are, so it gets no more trust here than an autodetected script.
   const untrusted = fakeFs({ "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }) })
-  assert.deepEqual(detectVerifyCommands("/repo", { all: true }, untrusted), { commands: [], source: null, skipped: "all-mode", repoSupplied: false })
+  assert.deepEqual(detectVerifyCommands("/repo", { all: true }, untrusted), ALL_MODE)
   const withReviewYaml = fakeFs({
     "/repo/REVIEW.yaml": "verify:\n  - npm test\n",
     "/repo/package.json": JSON.stringify({ scripts: { lint: "eslint ." } }),
   })
-  assert.deepEqual(detectVerifyCommands("/repo", { all: true }, withReviewYaml), { commands: [], source: null, skipped: "all-mode", repoSupplied: false })
+  assert.deepEqual(detectVerifyCommands("/repo", { all: true }, withReviewYaml), ALL_MODE)
 })
 
 test("detectVerifyCommands marks every resolved command list as repo-supplied", () => {
@@ -215,11 +222,28 @@ test("detectVerifyCommands marks every resolved command list as repo-supplied", 
   assert.equal(detectVerifyCommands("/repo", {}, fakeFs({})).repoSupplied, false)
 })
 
+test("detectVerifyCommands returns exactly the documented key set on every branch", () => {
+  // The one authoritative pin of which keys exist per branch, so a new field
+  // fails here — in the test that is *about* the shape — rather than only in
+  // tests that are about behaviour. Both branch-specific keys are pinned in
+  // both directions: `bodies` must be absent on the Makefile branch, because a
+  // target's recipe is never read here, so a body key there would be a promise
+  // the consent gate then prints as fact; and `makefile` must be absent on the
+  // package.json branch, where there is no resolved makefile to name.
+  const keys = (r) => Object.keys(r).sort()
+  const base = ["commands", "repoSupplied", "skipped", "source"]
+  const pkgFs = fakeFs({ "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }) })
+  assert.deepEqual(keys(detectVerifyCommands("/repo", { all: true }, pkgFs)), base)
+  assert.deepEqual(keys(detectVerifyCommands("/repo", {}, fakeFs({}))), base)
+  assert.deepEqual(keys(detectVerifyCommands("/repo", {}, fakeFs({ "/repo/REVIEW.yaml": "verify:\n  - npm test\n" }))), base)
+  assert.deepEqual(keys(detectVerifyCommands("/repo", {}, pkgFs)), ["bodies", ...base].sort())
+  assert.deepEqual(keys(detectVerifyCommands("/repo", {}, fakeFs({ "/repo/Makefile": "test:\n\tnode --test\n" }))), ["makefile", ...base].sort())
+})
+
 test("detectVerifyCommands returns nothing for a repo with no recognizable commands", () => {
-  const nothing = { commands: [], source: null, skipped: "not-detected", repoSupplied: false }
-  assert.deepEqual(detectVerifyCommands("/repo", {}, fakeFs({})), nothing)
+  assert.deepEqual(detectVerifyCommands("/repo", {}, fakeFs({})), NOT_DETECTED)
   const malformed = fakeFs({ "/repo/package.json": "{ not json" })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, malformed), nothing)
+  assert.deepEqual(detectVerifyCommands("/repo", {}, malformed), NOT_DETECTED)
 })
 
 test("detectVerifyCommands keeps provenance and skip-reason independent", () => {

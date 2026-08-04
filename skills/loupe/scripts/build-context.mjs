@@ -445,6 +445,14 @@ export function parseMakefileTargets(text) {
 //                 and a `verify:` entry is an unfiltered shell string. This is
 //                 the flag the orchestrator's consent gate tests: this function
 //                 resolves candidates, it never authorizes them.
+//                 It is provenance and nothing else. Two readings the name
+//                 invites are both wrong, and each would weaken the gate:
+//                 it does **not** mean the repo asked to be verified — an
+//                 autodetected `package.json` script is a script that happens
+//                 to exist, not a request — and it does **not** mean there is
+//                 something to run, since `verify: []` sets it true with an
+//                 empty list. "Is what we are about to execute controlled by
+//                 the reviewed repo" is the whole question it answers.
 //   bodies        Present only when source is "package.json": one entry per
 //                 whitelisted command's own script body, plus the
 //                 `pre<name>`/`post<name>` hooks npm's model defines, where the
