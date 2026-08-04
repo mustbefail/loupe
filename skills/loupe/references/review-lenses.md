@@ -23,6 +23,14 @@ prompts. Apply the checklist for your assigned lens only, to the file slice
 (diff + original) you were given, and return findings per
 `output-format.md`.
 
+## Cross-lens rules
+
+Both of these apply to every lens, base and custom alike. They are delivered
+to reviewers as their own prompt item (`SKILL.md` Step 3 item 6) exactly
+because they sit outside the per-lens sections below, which are pasted one at
+a time: a rule added to this section reaches every reviewer, a rule added
+above it reaches none.
+
 **Stay in your lane.** Reviewer subagents run in isolated contexts and
 cannot see each other's output within an iteration, so there is no runtime
 guard against three lenses all flagging the same line. Avoid that by

@@ -422,15 +422,48 @@ Each reviewer's prompt must be self-contained and include:
    `comment` use the exact citation prefix `According to custom
    instructions in '<name>' (<paraphrase>): <comment>`, where `<name>` is
    this lens's exact key.
-5. For a `type: "base"` lens: point it at its `reference` (the matching
-   section of `references/review-lenses.md` — e.g. that lens's own
-   `#correctness`/`#security`/`#performance`/`#maintainability`/`#devops`
-   section) for its checklist and severity calibration, and tell it
-   explicitly **not** to use the custom-lens citation prefix.
-6. The "stay in your lane" rule from `references/review-lenses.md`: report
-   only findings squarely within this lens's own concern; don't flag
-   something another lens would also flag just because it happens to touch
-   both.
+5. For a `type: "base"` lens: **paste that lens's own section of
+   `references/review-lenses.md` into the prompt verbatim** — that section
+   is its checklist and its severity calibration — and tell it explicitly
+   **not** to use the custom-lens citation prefix. Choose the section from
+   the lens's own `reference` value (`review-lenses.md#<anchor>`), keeping
+   this as data-driven as the `agent` routing above: read
+   `${CLAUDE_SKILL_DIR}/references/review-lenses.md`, find the `##` heading
+   whose slug matches `<anchor>` — headings are written as
+   ``## `correctness` ``, so strip backticks, lowercase, and turn spaces
+   into hyphens before comparing — and take everything from that heading
+   down to the next `##` heading or end of file. Introduce the pasted block
+   with a line naming what it is, e.g. `The <anchor> section of
+   references/review-lenses.md, verbatim:`, so that a lens `instructions`
+   line telling the reviewer to apply that section resolves to something
+   actually in front of it.
+
+   Paste rather than link, because the reviewer is a separate subagent whose
+   working directory is the **reviewed** repo, where
+   `references/review-lenses.md` does not exist: a bare
+   `review-lenses.md#<anchor>`, or any path relative to it, resolves to
+   nothing there. Pasting also drops any dependence on whether that subagent
+   can reach loupe's own installation directory at all. If `<anchor>` matches
+   no heading, dispatch the lens anyway with its `instructions` alone and
+   name the unresolved reference in this iteration's progress narration — a
+   lens reviewing without its checklist is degraded, not fatal, but it must
+   not be silent.
+6. Paste the `## Cross-lens rules` section of
+   `references/review-lenses.md` **verbatim**: the "stay in your lane" and
+   "report only what tooling can't catch" rules. This is its own item,
+   separate from item 5, because that section sits *above* the first lens
+   heading — item 5's per-lens paste carries it for no lens.
+
+   Verbatim, because paraphrase is how one of the two went missing. The lane
+   rule reaches a reviewer today only as the single clause "stay strictly
+   within the X concern" inside each base lens's `instructions`; the tooling
+   rule reaches it by no route at all — while two later steps assume it
+   arrived. Step 7 exists to catch precisely the regressions no lens is
+   permitted to report, and Step 8's stop check states outright that
+   "reviewers are told not to report what a type-checker or test run
+   catches". A reviewer that never received the rule files those findings
+   anyway, and the division of labour both steps rest on stops holding
+   without either step noticing.
 7. Paste the reviewer finding contract from `references/output-format.md`
    §1 **verbatim** into the prompt, and require the reviewer to return
    only that JSON object, nothing else in the response. §1 already states
