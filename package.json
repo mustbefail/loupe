@@ -1,6 +1,6 @@
 {
   "name": "loupe",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Headless iterative code review for Claude Code — an ensemble of review lenses plus a judge, in a loop.",
   "type": "module",
   "license": "MIT",
