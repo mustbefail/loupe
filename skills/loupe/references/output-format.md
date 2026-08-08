@@ -442,7 +442,7 @@ commit the changes yourself.
   independent. `SKILL.md` Step 6 fix item 1 requires the executor to verify
   that kind of thing directly and report what it did; that report —
   carried onto the finding as `executorVerification` (`SKILL.md` Step 6
-  fix item 3) — is the only evidence anywhere in this loop that such a fix is
+  fix item 4) — is the only evidence anywhere in this loop that such a fix is
   correct, and this bullet is where it finally surfaces instead of being
   thrown away. Render it as a trailing clause: `Executor reported
   verifying: <executorVerification>.` Frame it as exactly that — the
@@ -455,6 +455,16 @@ commit the changes yourself.
   when "nothing was verified" is the fact actually worth surfacing. The
   rest of the bullet text is the finding's own `comment` (§1), bounded per
   the bullet-length rule above.
+
+  When the finding carries `prohibitionViolation` (`SKILL.md` Step 6 fix
+  item 3 — the executor moved refs or discarded working-tree state despite
+  the prohibitions), render it on its own line, in full, and do **not**
+  fold it into the verification clause or let it change the bullet's
+  bucket: the fix itself may be perfectly good. Say which check tripped
+  and what that implies for the rest of the run, not for this finding —
+  the fixes at risk are the *other* ones the tree was holding at the time.
+  A run with even one of these should be read as a run whose tree state is
+  no longer fully accounted for.
 - **Deferred** — the catch-all bucket (§5 rule 3): everything not Rejected
   and not Fixed. In practice this covers four cases: (1) findings of any
   severity excluded from `actionable` by the current `--severity-gate` and
@@ -528,7 +538,11 @@ commit the changes yourself.
 - **Unreviewed files** — always printed, built from the set difference
   `SKILL.md` Step 10 computes between the files the working tree's diff
   currently touches and `state.changedFiles` (the `changedFiles` set Step 2
-  captured and persisted on iteration 0). A fix Step 6 dispatches is
+  captured and persisted on iteration 0), **less `state.generatedFiles`** —
+  a file excluded as generated is also in the diff and also unseen by every
+  lens, but it did not get there through a fix, and this section states a
+  cause. Do not fold the two together to make the list longer. A fix Step 6
+  dispatches is
   permitted to touch a companion file that no lens's `files` array ever
   named — a caller that genuinely needs updating alongside the function it
   calls, for instance (`SKILL.md` Step 6 fix item 1) — and that companion

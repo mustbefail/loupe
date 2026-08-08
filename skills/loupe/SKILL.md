@@ -195,7 +195,7 @@ Parsed from the skill invocation's argument string. All are optional.
 
    Write the initial contents exactly as:
    ```json
-   { "iteration": 0, "seen": [], "findings": [], "verifyCommands": null, "verifyConsent": null, "verifyBaseline": null, "verifyRuns": [], "treeFingerprint": null, "changedFiles": null }
+   { "iteration": 0, "seen": [], "findings": [], "verifyCommands": null, "verifyConsent": null, "verifyBaseline": null, "verifyRuns": [], "treeFingerprint": null, "changedFiles": null, "generatedFiles": null }
    ```
    `findings` will accumulate one entry per dedup key across the whole run
    (schema below, Step 4/5/6) — this is what drives the no-progress guard
@@ -307,8 +307,10 @@ inferring trust from `source` — and a non-null `source` with an empty
 `commands` is a deliberate opt-out, not a failure to find anything.
 
 On iteration 0 only, write this call's `changedFiles` array verbatim to
-`state.changedFiles` right after parsing it, and never rewrite it on any
-later iteration. This is the one persisted record of what the reviewers
+`state.changedFiles` right after parsing it, and its `generated` array to
+`state.generatedFiles` at the same moment, and never rewrite either on any
+later iteration. `generatedFiles` is persisted for one reason: Step 10 has to
+subtract it, and Step 9 forbids re-running this script to get it back. This is the one persisted record of what the reviewers
 were actually handed at the start of the run: Step 6's fixes are free to
 touch a companion file none of them names (Step 6 fix item 1 permits it), and
 `state.changedFiles` is what lets Step 10 tell such a file apart from one a
@@ -655,7 +657,7 @@ take, and Step 7 will skip too.
 
 This step holds **two** independently numbered lists: the three gate items
 directly below, cited everywhere as **gate item 1–3**, and the per-finding
-dispatch list further down, cited as **fix item 1–4**. A bare "Step 6 item 3"
+dispatch list further down, cited as **fix item 1–5**. A bare "Step 6 item 3"
 resolves to two different things — never write one, in this file or the
 references.
 
@@ -924,7 +926,7 @@ the gate items above:
      from the specification or requirement the code is supposed to
      satisfy — never from the code's own current output.** A test that
      snapshots current behaviour passes both of `loupe`'s own checks —
-     this step's own confirmation that an edit landed (item 3 below), and
+     this step's own confirmation that an edit landed (item 4 below), and
      Step 7's regression gate — while pinning whatever bug already exists;
      neither check can tell a snapshot test from one that actually
      exercises the requirement. Told to derive expected values from the
@@ -938,7 +940,7 @@ the gate items above:
      glob — so a fix adding `test/mask-tests.js` alongside it would never
      run at all. A test runner given a target it doesn't match exits 0
      having run nothing new, and neither this step's own confirmation
-     (item 3 below) nor Step 7's regression gate can tell that apart from a
+     (item 4 below) nor Step 7's regression gate can tell that apart from a
      passing suite that actually covered the change — both would report
      green. The concrete check: after the change, the resolved test
      command's own reported count of tests run must have gone up by the
@@ -956,17 +958,55 @@ the gate items above:
      those edits instead of reverting them while addressing this one.
    - **Do not run any formatter or linter that rewrites files.** Step 7
      owns verification; a command that mutates files here corrupts the
-     tree comparison this step's own confirmation (item 3 below) and Step
+     tree comparison this step's own confirmation (item 4 below) and Step
      7's gate both depend on.
    - **Report what was verified and how**, not only what was changed — the
      measurement, the reproduction, or the spec-derived basis behind the
-     fix, so item 3 below has something concrete to confirm against.
+     fix, so item 4 below has something concrete to confirm against.
 2. **Same-file serialization:** if two or more keys in `fixQueue` target
    the same file, dispatch those sequentially — one executor call must
    complete before the next starts on that file — so concurrent edits
    can't clobber each other. Fixes on different files may run in
    parallel.
-3. Confirm the fix: check that `git -C <repo> diff` now touches the finding's file
+3. Check that the executor left the repository's refs and working-tree state
+   alone, per dispatch. The git prohibitions item 1 hands it are delivered
+   **verbatim** and were violated anyway in a live run: an executor ran `git
+   stash` and `git stash pop` to compare before and after, then reported that
+   it had used "no `git commit`/`checkout`/`reset`, per the git prohibitions"
+   — naming the ones it had not broken and omitting the one it had. Prompt
+   text is not enforcement. Capture two values from the reviewed repo
+   immediately **before** each dispatch and again immediately **after** it
+   returns:
+
+   - **The number of entries in `HEAD`'s reflog** (`git -C <repo> reflog | wc
+     -l`) must be unchanged. This is the one signal that survives a `stash`
+     followed by a `pop`: that pair leaves `HEAD` on the same commit and the
+     stash list back at its original length, so comparing either of those
+     catches nothing at all, while the reflog still grew by one. It also
+     catches `commit`, `checkout`, and `reset`, and an ordinary file edit
+     does not move it.
+   - **No path present in `git -C <repo> status --porcelain` before may be
+     absent after.** A fix legitimately adds paths and changes contents; a
+     path that *disappears* means working-tree state was discarded — what
+     `git restore` and `git clean` do. Neither touches the reflog, so this is
+     the only one of the two checks that sees them.
+
+   Say what this misses rather than implying it is a sandbox: `git push`
+   changes nothing locally and is invisible to both checks, and either can be
+   defeated deliberately. What it catches is the case that actually happened —
+   a subagent reaching for a convenient command and then reporting, honestly
+   and wrongly, that it had not.
+
+   A tripped check is **not** a failed fix and must not be recorded as one.
+   Set `prohibitionViolation` on the finding naming which check tripped, leave
+   the status the confirmation below produces, and render it in the report.
+   The exposure is not this fix but the next one: under item 2's same-file
+   serialization a `git stash` on dispatch N takes fixes 1..N-1 with it, and a
+   failed pop loses them — while the confirmation below still passes (this
+   finding's file did change) and Step 7 still passes (the suite is still
+   green, just of a tree missing earlier work). Both indicators stay green
+   precisely when the damage is worst.
+4. Confirm the fix: check that `git -C <repo> diff` now touches the finding's file
    in a way that addresses the comment (if a `suggestion` was given,
    confirm `from` no longer appears verbatim, or an equivalent change is
    present). If confirmed: `status: "fixed"`, `fixedInIteration: N`, and
@@ -987,7 +1027,7 @@ the gate items above:
    evidence exists for the "correct" question Step 7 can't fully answer
    either (`output-format.md` §5 renders it on the Fixed bullet for exactly
    this reason).
-4. If not confirmed: retry the executor once more within this same
+5. If not confirmed: retry the executor once more within this same
    iteration with a corrective note describing what's still wrong. If
    still not confirmed after the retry: `status: "unresolved"`,
    increment `fixAttempts`. It stays in `fixQueue` for the next iteration
@@ -1013,7 +1053,7 @@ staying silent about a skipped gate:
   immediately before this iteration's first executor dispatch, compared
   against a freshly computed hash of the current `git -C <repo> diff`; this is not
   inferred from Step 6's confirmation: a fix attempt can edit the finding's
-  file and still fail confirmation (Step 6 fix items 3–4), so "confirmed" and
+  file and still fail confirmation (Step 6 fix items 4–5), so "confirmed" and
   "changed the tree" are not the same test, and only a genuinely untouched
   tree hashes identical to that fingerprint. Bare `git diff` alone has
   nothing to compare against here — by default it already reflects the
@@ -1118,14 +1158,19 @@ regression a fix just introduced.
    same words Step 6's fix loop passes through when it dispatches an
    executor — the git prohibitions from the safety rules above. Extend to
    this dispatch, by pointer rather than by repetition, the parts of Step
-   6 item 1's requirements that still apply to a repair rather than a
+   6 fix item 1's requirements that still apply to a repair rather than a
    fresh finding: a claim behind the repair needs verifying, not trusting;
    a green re-run afterward (item 4 below) only proves what this command
    chain covers, not that the repair is correct where nothing in that
    chain looks; no formatter or linter that rewrites files; and reporting
    what was verified and how. The snapshot-test-vs-spec item and the
    stale-line-number item don't transfer — this dispatch isn't handed a
-   missing-coverage finding, or any line number, to begin with.
+   missing-coverage finding, or any line number, to begin with. **Step 6
+   fix item 3's refs-and-worktree check does transfer, and matters more
+   here**: this executor is dispatched precisely when a command is already
+   failing, which is exactly the situation in which reaching for `git
+   stash` or `git restore` to "get back to a clean state" looks helpful —
+   and by this point the tree holds every fix this iteration landed.
 
    The repair executor gets exactly one attempt, and nothing guarantees it
    edits anything. Check that against a fresh hash of the current `git -C <repo> diff`
@@ -1305,12 +1350,21 @@ Five things this step must still do, beyond what §5 itself specifies:
   working-tree edits regardless of mode (the git prohibitions never let
   `loupe` commit anything), so a fresh `diff HEAD`-plus-untracked read
   always surfaces them. Diff that set against `state.changedFiles` — the
-  iteration-0 set Step 2 persisted there (see Step 1/Step 2) — and pass
-  the files present in the former but not the latter to §5's rendering.
-  Every file in that difference reached the working tree through one of
-  `loupe`'s own fixes (Step 6 permits a fix to touch a companion file no
-  lens's `files` array ever named) and was never in any lens's input, this
-  run or, if the loop already stopped, ever. Pass an empty list through
+  iteration-0 set Step 2 persisted there (see Step 1/Step 2) — **then
+  subtract `state.generatedFiles`**, and pass what is left to §5's
+  rendering. The subtraction is not a detail: a file `build-context.mjs`
+  excluded as generated is in the diff and was never handed to a lens, so
+  it lands in that difference on every run that has one, and without the
+  subtraction the section states a false cause for it. In a live run
+  `package-lock.json` was reported as having "entered the diff through
+  `loupe`'s own fixes" when it had been in the diff from the start and
+  excluded before any lens ran — the file was right, the explanation was
+  invented. What remains after the subtraction *did* reach the working
+  tree through one of `loupe`'s own fixes (Step 6 permits a fix to touch a
+  companion file no lens's `files` array ever named) and was never in any
+  lens's input, this run or, if the loop already stopped, ever. A run may
+  legitimately have generated files excluded and no fix-introduced ones at
+  all; that is the empty case below, not a reason to merge the two. Pass an empty list through
   when the difference is empty rather than skipping the section — §5
   renders that case explicitly, and skipping it here would silently drop
   the "everything was reviewed" confirmation that case exists to give.
