@@ -1,65 +1,23 @@
-# loupe's built-in default review lenses.
-#
-# This uses the SAME format as a repository's own REVIEW.yaml, with two extra
-# optional keys per lens:
-#   agent      — which reviewer subagent runs the lens:
-#                "security-reviewer" | "code-reviewer" (default) | "general-purpose"
-#   reference  — the section of references/review-lenses.md holding the full
-#                checklist and severity calibration the reviewer should read.
-#
-# A lens with no `fileFilters` applies to EVERY changed file. A lens with
-# `fileFilters` only runs when the diff touches a matching file (so it costs
-# nothing on unrelated PRs). A repo's REVIEW.yaml lens with the same `name` as
-# one of these overrides it.
 instructions:
   - name: correctness
     agent: code-reviewer
     reference: review-lenses.md#correctness
-    instructions: |
-      Built-in correctness lens (applies to every changed file). Flag logic
-      errors, off-by-one and boundary mistakes, wrong return values, broken or
-      violated contracts, unhandled cases and inputs, and behavioural
-      regressions introduced by the diff. Read the correctness section of
-      references/review-lenses.md for the full checklist and severity
-      calibration, and stay strictly within the correctness concern.
+    instructions: Built-in correctness lens; applies to every changed file. Apply the correctness section of references/review-lenses.md as your checklist and severity calibration, and stay strictly within the correctness concern.
 
   - name: security
     agent: security-reviewer
     reference: review-lenses.md#security
-    instructions: |
-      Built-in security lens (applies to every changed file). Flag injection
-      (SQL, shell/command, path), unsafe eval/deserialization, secret or
-      credential exposure, missing or broken authn/authz, unsafe file and
-      network access, and supply-chain risk. Read the security section of
-      references/review-lenses.md for the full checklist and severity
-      calibration, and stay strictly within the security concern.
+    instructions: Built-in security lens; applies to every changed file. Apply the security section of references/review-lenses.md as your checklist and severity calibration, and stay strictly within the security concern.
 
   - name: performance
     agent: code-reviewer
     reference: review-lenses.md#performance
-    instructions: |
-      Built-in performance lens (applies to every changed file). Flag N+1
-      queries, needless work in hot paths, accidental quadratic behaviour, and
-      wasteful memory or IO. Read the performance section of
-      references/review-lenses.md for the full checklist and severity
-      calibration, and stay strictly within the performance concern.
+    instructions: Built-in performance lens; applies to every changed file. Apply the performance section of references/review-lenses.md as your checklist and severity calibration, and stay strictly within the performance concern.
 
   - name: maintainability
     agent: code-reviewer
     reference: review-lenses.md#maintainability
-    instructions: |
-      Built-in maintainability lens (applies to every changed file). Flag
-      design smells from the Fowler smell catalogue (Mysterious Name,
-      Duplicated Code, Feature Envy, Data Clumps, Primitive Obsession,
-      Repeated Switches, Shotgun Surgery, Divergent Change, Speculative
-      Generality, Message Chains, Middle Man, Refused Bequest). Read the
-      maintainability section of references/review-lenses.md for the full
-      checklist and severity calibration. Every finding here is a
-      judgement call, never a hard violation: cap severity at `medium` —
-      never report `blocker`/`high` from this lens. Stay strictly within
-      the maintainability concern — leave logic bugs to correctness,
-      security issues to security, and hot-path inefficiency to
-      performance.
+    instructions: "Built-in maintainability lens; applies to every changed file. Apply the maintainability section of references/review-lenses.md as your checklist. Every finding here is a judgement call, never a hard violation: cap severity at medium — never report blocker or high from this lens. Stay strictly within the maintainability concern."
 
   - name: devops
     agent: code-reviewer
@@ -88,24 +46,4 @@ instructions:
       - "**/charts/**"
       - "**/cdk/**"
       - "**/*.cdk.ts"
-    instructions: |
-      Built-in DevOps / infrastructure lens for CI, containers, IaC, and deploy
-      config (only runs when the diff touches matching files). Flag:
-        - container images that are unpinned or use a floating tag such as
-          :latest; base images from untrusted sources;
-        - containers or processes that run as root when they need not, and
-          missing drop of privileges;
-        - secrets, tokens, private keys, or credentials committed into
-          Dockerfiles, compose files, CI workflows, or IaC (they belong in a
-          secret store / masked CI variable, never in the repo);
-        - IAM roles, security groups, or bucket policies that are broader than
-          least privilege (wildcards on actions/resources, 0.0.0.0/0 ingress);
-        - non-idempotent or unsafe provisioning (Ansible tasks without proper
-          state, destructive Terraform without guards);
-        - missing healthchecks, resource limits, or restart policies where the
-          platform expects them;
-        - CI steps that echo secrets, run untrusted PR input with privileged
-          tokens, or lack pinned action versions.
-      Read the devops section of references/review-lenses.md for the full
-      checklist and severity calibration, and stay strictly within the
-      infrastructure/operations concern (leave app-logic bugs to correctness).
+    instructions: Built-in devops lens; runs only when the diff touches infrastructure, CI, container or deploy files. Apply the devops section of references/review-lenses.md as your checklist and severity calibration, and stay strictly within the operational concern.

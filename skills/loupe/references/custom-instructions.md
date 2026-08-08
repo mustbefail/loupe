@@ -28,7 +28,15 @@ instructions:
 - `name` — a free-text identifier for the group. This exact string becomes
   the lens name (the key under `lenses` in `build-context.mjs`'s output,
   and the value a reviewer for this lens reports in the finding's `lens`
-  field).
+  field). Giving a group the same `name` as a base lens (`correctness`,
+  `security`, `performance`, `maintainability`, `devops`) — matched
+  **exactly, case included**, unlike `disableDefaultLenses`, which compares
+  case-insensitively — **replaces** that base lens rather than running
+  alongside it — the repo's own instructions
+  and `fileFilters` are used, and the built-in ones for that name never
+  run. That is a second way to drop a base lens, distinct from listing it
+  under `disableDefaultLenses`, and the report distinguishes them: a
+  replaced lens is reported as shadowed, a listed one as disabled.
 - `fileFilters` *(optional)* — a list of glob patterns using glob matching (see `fnmatch`
   in `build-context.mjs`) — this is **not** Python's `fnmatch` module (that
   module has no `**` special-casing); it is loupe's own matcher:

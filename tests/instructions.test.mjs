@@ -197,6 +197,34 @@ test("loadDefaultLenses loads the bundled base lenses with data-driven routing",
   assert.equal(maintainability.include_patterns.length, 0) // all-files
 })
 
+test("every base lens carries a reference and instructions that point at its own section", () => {
+  // The prose moved out of the rules file and into references/review-lenses.md,
+  // so a lens now delivers its checklist by naming the section rather than
+  // restating it. That makes both halves load-bearing: an empty `instructions`
+  // or one naming the wrong section leaves the reviewer with no checklist at
+  // all, and nothing else in the loop would notice.
+  for (const d of loadDefaultLenses()) {
+    assert.ok(d.instructions.trim().length > 0, `${d.name}: empty instructions`)
+    assert.ok(d.reference, `${d.name}: missing reference`)
+    assert.equal(d.reference, `review-lenses.md#${d.name}`)
+    assert.ok(
+      d.instructions.includes(`${d.name} section of references/review-lenses.md`),
+      `${d.name}: instructions do not name its own section`,
+    )
+  }
+})
+
+test("the maintainability lens keeps its severity ceiling in the rules file", () => {
+  // The ceiling is an output constraint the default `--severity-gate high`
+  // leans on, and nothing in the code enforces it — Step 8 does not clamp. It
+  // has to survive in the text the reviewer is actually handed, so pin it here
+  // rather than trusting that a prose edit will remember it.
+  const m = loadDefaultLenses().find((d) => d.name === "maintainability").instructions
+  assert.match(m, /cap severity at medium/i)
+  assert.match(m, /never report blocker or high/i)
+  assert.doesNotMatch(m, /report (blocker|high) (when|if|for)/i)
+})
+
 const COMMENT_YAML = `instructions:
   - name: General Standards # top-level
     fileFilters:
