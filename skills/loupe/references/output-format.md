@@ -203,7 +203,7 @@ findings — each already carrying the `key` the orchestrator attached in §2
   can't happen", "verified false") without saying what was run to reach it
   does not satisfy this.
 - **The repo overrides.** When the reviewed repo ships its own
-  `REVIEW.yaml` with custom lenses, the judge is given those lenses'
+  `REVIEW.json` with custom lenses, the judge is given those lenses'
   `instructions` text alongside the fresh findings (`build-context.mjs`'s
   `lenses[*].instructions` for `type: "custom"` entries — `SKILL.md` Step 5
   passes this through; no new field is needed). When a custom lens's
@@ -393,9 +393,9 @@ text for every finding is in `state.findings` at `<state-dir>/state.json`
 
 ### Lenses
 Ran: correctness, performance, maintainability.
-**Disabled by the reviewed repo's own `REVIEW.yaml`: devops.** Nothing in this
+**Disabled by the reviewed repo's own `REVIEW.json`: devops.** Nothing in this
 report speaks for that concern.
-**Replaced by the reviewed repo's own `REVIEW.yaml`: security.** A custom lens
+**Replaced by the reviewed repo's own `REVIEW.json`: security.** A custom lens
 under this same name ran in its place; nothing in this report speaks for
 `loupe`'s own base security checklist.
 
@@ -507,12 +507,24 @@ commit the changes yourself.
   judgement (duplicate/noise/out of scope) usually isn't — which is
   exactly why an unconfirmed factual disproof doesn't land here at all
   (case (4) above), only a confirmed one does.
+- **Config notices** — `configNotices` is a flat array of `{ path, reason }`,
+  `[]` when there is nothing to disclose. It is always printed, the empty
+  case included: an absent mention reads as "the config was read in full".
+  Notices whose consequence is about lenses — `yaml-unsupported`,
+  `parse-error`, `shape-invalid`, `item-dropped` — render in `### Lenses`
+  alongside `disabledLenses` and `shadowedLenses`. Notices that affect which
+  commands were resolved — `parse-error`, `shape-invalid`,
+  `verify-type-invalid` — render **also** in `### Verification`, next to the
+  line naming the command source, because otherwise that section presents
+  autodetected commands as normal when the repo's own list was in fact
+  unreadable. The legal `reason` values are defined in the block comment
+  above `parseConfig` in `build-context.mjs` and are not re-listed here.
 - **Lenses** — always printed, built from `build-context.mjs`'s `lenses` keys,
   its `disabledLenses` array, and its `shadowedLenses` array. Name the lenses
   that ran, and — whenever `disabledLenses` is non-empty — name every base
-  lens the reviewed repo's own `REVIEW.yaml` switched off, and say that
+  lens the reviewed repo's own `REVIEW.json` switched off, and say that
   nothing in this report speaks for that concern. This is not bookkeeping: a
-  repo can add one line to its `REVIEW.yaml` to disable the very lens that
+  repo can add one line to its `REVIEW.json` to disable the very lens that
   would have reviewed its `verify:` payload, and without this section the
   three buckets look identical whether that lens found nothing or never ran.
   An absent section reads as "all lenses ran", so print it even when nothing

@@ -1,14 +1,14 @@
 # Review Lenses (Base)
 
-`loupe`'s base lenses are defined in `rules/default.yaml` — the same YAML
-schema as a repo's `REVIEW.yaml`, plus an `agent` key (which reviewer subagent
+`loupe`'s base lenses are defined in `rules/default.json` — the same JSON
+schema as a repo's `REVIEW.json`, plus an `agent` key (which reviewer subagent
 runs the lens) and a `reference` key (which section here holds its checklist).
 `correctness`, `security`, `performance`, and `maintainability` run on every
 reviewable file each iteration; `devops` is a base lens too, but it is
 glob-scoped to infrastructure/CI files and only runs when the diff touches
-them. Custom lenses matched from the reviewed repo's own `REVIEW.yaml` run
+them. Custom lenses matched from the reviewed repo's own `REVIEW.json` run
 alongside these (see `custom-instructions.md`); to drop a base lens, a repo
-lists it under `disableDefaultLenses` in its `REVIEW.yaml`.
+lists it under `disableDefaultLenses` in its `REVIEW.json`.
 
 Each lens object from `build-context.mjs` carries `type` (`"base"` or
 `"custom"`), `agent` (`code-reviewer`, `security-reviewer`, or

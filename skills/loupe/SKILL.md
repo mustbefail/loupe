@@ -1,6 +1,6 @@
 ---
 name: loupe
-description: Headless iterative code review of the current branch's diff against its base, or of the entire repo with --all. Use when the user asks to review changes, review a branch or PR, run a pre-commit review, review the whole codebase/directory, or mentions loupe or REVIEW.yaml.
+description: Headless iterative code review of the current branch's diff against its base, or of the entire repo with --all. Use when the user asks to review changes, review a branch or PR, run a pre-commit review, review the whole codebase/directory, or mentions loupe or REVIEW.json.
 ---
 
 # loupe
@@ -28,7 +28,7 @@ stay consistent with, three other files in this skill:
   Treat it as load-bearing law, not a suggestion.
 - `references/review-lenses.md` and `references/custom-instructions.md` —
   what each base lens checks for, and how custom lenses from the reviewed
-  repo's own `REVIEW.yaml` are matched and cited.
+  repo's own `REVIEW.json` are matched and cited.
 
 ## Arguments
 
@@ -42,9 +42,9 @@ Parsed from the skill invocation's argument string. All are optional.
 | `--fix` / `--no-fix` | `--fix` | Whether Step 6 dispatches the executor. Under `--no-fix`, actionable findings are never attempted and still surface in the final report's Deferred section as "attempted, unresolved" (per `output-format.md` §5 — that phrase covers both "attempted and failed" and "never attempted"). **`--fix` being the default doesn't mean a given run fixes anything:** it only dispatches for findings that already cleared `--severity-gate` (see that row below) and weren't rejected, and on a codebase already in decent shape that set is often empty. Don't treat "often" as a guarantee, though — see the `--severity-gate` row for why the same diff can go either way from one run to the next. |
 | `--severity-gate <level>` | `high` | The minimum severity a finding must clear to become actionable (see "Severity ranks" under Step 5). Accepts `blocker`\|`high`\|`medium`\|`low` — a finding is actionable exactly when its severity rank meets or exceeds the gate's rank and the judge doesn't reject it (Step 5/6), so lowering the gate to `medium` or `low` genuinely widens what gets auto-fixed. Reviewer output skews toward `medium`/`low` on already-healthy code — one real run of four Opus reviewer lenses over a competently-written 4-file diff produced 20 findings, 12 `medium`, 8 `low`, zero `high`/`blocker`, so the default gate Deferred every one of them — so a default run **may well** fix nothing. But severity is a model judgement, not a fixed property of the code: a second run of those same four lenses over that identical diff came back with a `high` where the first pass had rated the same function `medium`, so this is a tendency on healthy code, never a determinism guarantee — the same diff can clear the gate on one pass and not the next. Pass `--severity-gate medium` if you'd rather `loupe` act on `medium` findings too. |
 | `--committed` | off (review the working tree) | What to diff against `--base`. By default `loupe` reviews the **working tree** — every change not yet in the base, whether committed on the branch or still uncommitted (tracked edits and new untracked files) — so work-in-progress is reviewed and each pass's re-diff sees the edits Step 6 just made. Pass `--committed` to diff the commit range (`mergeBase..HEAD`) instead, reviewing only what has been committed (a PR/MR-style gate). Passed through to `build-context.mjs --committed`. |
-| `--verify <cmd>` | autodetected (see Step 7) | A shell command that must still pass after a fix pass. **Repeatable** — each occurrence appends one command, so `--verify "npx tsc --noEmit" --verify "npm test"` yields a two-command list that runs in that order, matching the list shape `REVIEW.yaml`'s `verify:` produces. Given at least once, it **replaces** the whole resolved list. Prefer repeating the flag over an `&&`-chain: a chain is one opaque command, so it loses the per-command baseline match (Step 7 item 2 matches by exact `cmd` string) and the per-command report bullets. Because the human wrote it, it needs no consent prompt (Step 6) and it is the **only** way to enable the gate under `--all`. |
+| `--verify <cmd>` | autodetected (see Step 7) | A shell command that must still pass after a fix pass. **Repeatable** — each occurrence appends one command, so `--verify "npx tsc --noEmit" --verify "npm test"` yields a two-command list that runs in that order, matching the list shape `REVIEW.json`'s `verify:` produces. Given at least once, it **replaces** the whole resolved list. Prefer repeating the flag over an `&&`-chain: a chain is one opaque command, so it loses the per-command baseline match (Step 7 item 2 matches by exact `cmd` string) and the per-command report bullets. Because the human wrote it, it needs no consent prompt (Step 6) and it is the **only** way to enable the gate under `--all`. |
 | `--no-verify` | off (verify when commands are known) | Turn the Step 7 regression gate off entirely: no baseline run, no post-fix run. Use it when the repo's test suite is too slow to run once per iteration, accepting that a fix can then break the build with nothing noticing. |
-| `--all` | off (diff against `--base`) | Review the **entire repository** instead of a diff — for a first look at a codebase with no meaningful base to compare against (e.g. a downloaded skill or a repo someone just handed you). Implemented as a diff against git's empty-tree object, so every tracked file is treated as newly added (`original` is always `null`). Passed through to `build-context.mjs --all`; when given, `--base` is ignored (there's no real base) and Step 2's default-branch detection is skipped. Combine with `--committed` to diff the empty tree only against `HEAD` (skips uncommitted/untracked work). **Trust note:** even under `--all`, `loupe` still reads that repo's on-disk `REVIEW.yaml` — its custom-lens `instructions` are passed verbatim to the reviewer and judge subagents, and its `disableDefaultLenses` can switch off `loupe`'s own base lenses — so only run `loupe` on repositories whose `REVIEW.yaml` you trust. `--all` also resolves **no** verification command the repo supplies, so only `--verify` enables the gate here — see the verification safety rule below for why. |
+| `--all` | off (diff against `--base`) | Review the **entire repository** instead of a diff — for a first look at a codebase with no meaningful base to compare against (e.g. a downloaded skill or a repo someone just handed you). Implemented as a diff against git's empty-tree object, so every tracked file is treated as newly added (`original` is always `null`). Passed through to `build-context.mjs --all`; when given, `--base` is ignored (there's no real base) and Step 2's default-branch detection is skipped. Combine with `--committed` to diff the empty tree only against `HEAD` (skips uncommitted/untracked work). **Trust note:** even under `--all`, `loupe` still reads that repo's on-disk `REVIEW.json` — its custom-lens `instructions` are passed verbatim to the reviewer and judge subagents, and its `disableDefaultLenses` can switch off `loupe`'s own base lenses — so only run `loupe` on repositories whose `REVIEW.json` you trust. `--all` also resolves **no** verification command the repo supplies, so only `--verify` enables the gate here — see the verification safety rule below for why. |
 
 ## Safety rules (non-negotiable)
 
@@ -75,7 +75,7 @@ Parsed from the skill invocation's argument string. All are optional.
   disclosure and consent.** The commands in `build-context.mjs`'s
   `verify.commands` come off that repo's disk: autodetected from its
   `package.json` scripts or `Makefile` targets, or taken verbatim from its
-  `REVIEW.yaml` `verify:` list. Be precise about how thin the containment
+  `REVIEW.json` `verify:` list. Be precise about how thin the containment
   is: the autodetected **names** are whitelisted, but each name runs
   whatever body the repo wrote, so `npm run test` executes that repo's
   `test` script, and a `verify:` entry is an unfiltered shell string. This
@@ -287,7 +287,7 @@ default working-tree mode, Step 6's fixes *do* show up on the re-diff, which
 is what makes the loop genuinely iterative.
 
 Parse stdout as JSON: `{ base, mergeBase, mode, all, changedFiles, renamed,
-generated, verify, disabledLenses, shadowedLenses, lenses }`. `mode` is
+generated, verify, configNotices, disabledLenses, shadowedLenses, lenses }`. `mode` is
 `"working-tree"` (default) or
 `"committed"` (under `--committed`) — it records what was diffed; `all` is
 `true` under `--all`, `false` otherwise. `verify` is
@@ -305,6 +305,26 @@ Two consequences worth stating at the point of use: `repoSupplied` is the
 field the consent gate tests (Step 6) — read that boolean rather than
 inferring trust from `source` — and a non-null `source` with an empty
 `commands` is a deliberate opt-out, not a failure to find anything.
+
+`configNotices` is the merged, deduplicated view of every notice
+`build-context.mjs`'s own config readers produced while parsing the reviewed
+repo's `REVIEW.json` and the skill's bundled `rules/default.json` — `[]` when
+nothing was dropped or invalid. **Its render spec lives in
+`references/output-format.md` §5's Config notices entry; the legal `reason`
+values live in the block comment above `parseConfig` in
+`scripts/build-context.mjs`.** Point at both rather than restating either
+here, for the same reason Step 2 already does this for `verify`'s `source`
+and `skipped` above.
+
+If `build-context.mjs` exits non-zero instead of printing JSON, stop
+immediately and report the `loupe: …` message it printed to stderr — do not
+proceed to Step 3, the same way Step 1's git check stops rather than
+continuing on an error. This happens when the skill's own bundled
+`rules/default.json` fails to parse (`loadDefaultLenses` in
+`scripts/build-context.mjs`): a packaging defect in `loupe` itself, never
+something the reviewed repo's `REVIEW.json` can trigger, and one this step
+has no way to recover from short of silently shipping zero base lenses under
+what would otherwise look like a normal run.
 
 On iteration 0 only, write this call's `changedFiles` array verbatim to
 `state.changedFiles` right after parsing it, and its `generated` array to
@@ -350,10 +370,10 @@ all:
   past the rest of the loop to nothing (no report needed; there was never
   anything to report on).
 - Otherwise, `lenses` is an object keyed by lens name. The base lenses come
-  from the skill's bundled `rules/default.yaml` (`correctness`, `security`,
+  from the skill's bundled `rules/default.json` (`correctness`, `security`,
   `performance`, and `maintainability` on every changed file; `devops` only
   when the diff touches infra/CI files), plus one key per matched custom
-  lens from the reviewed repo's own `REVIEW.yaml` (see
+  lens from the reviewed repo's own `REVIEW.json` (see
   `references/custom-instructions.md` §2). Each
   value is `{ type: "base"|"custom", agent, reference?, instructions,
   include_patterns?, exclude_patterns?, files: [{ path, diff, original }] }`.
@@ -364,7 +384,7 @@ all:
 **Base lenses + disable.** The lens set is the bundled base lenses **minus**
 any the repo turned off, **plus** the repo's custom lenses. A repo drops a
 built-in it doesn't want with a top-level `disableDefaultLenses: [<name>, …]`
-list in its `REVIEW.yaml` (names matched case-insensitively); those base lenses
+list in its `REVIEW.json` (names matched case-insensitively); those base lenses
 are removed before the merge. Custom lenses are otherwise purely additive — to
 *replace* a built-in, disable it and add your own differently-named lens.
 (Reusing a base lens's exact name isn't the intended mechanism; if you do, the
@@ -692,9 +712,9 @@ references.
    resolve. So print **every** rule you find for that target across the
    makefile(s) you can see, not only the first one, and say that even the
    full set is still an incomplete picture, not a confirmed command. The
-   `REVIEW.yaml` source needs neither this caveat nor this
+   `REVIEW.json` source needs neither this caveat nor this
    reading, because it resolves nothing away: a `source:
-   "REVIEW.yaml"` command **is** its `verify:` entry — an unfiltered shell
+   "REVIEW.json"` command **is** its `verify:` entry — an unfiltered shell
    string, per the safety rules — so the command list already printed
    above is the whole body. Saying "no body was resolved" about it would
    tell the human something was hidden when nothing was.
@@ -702,7 +722,7 @@ references.
    A `source: "--verify"` command is the string the human themselves typed,
    which item 2 doesn't even ask them to confirm — that settles
    *authorization*. For most `--verify` commands it settles *disclosure*
-   too, for the same reason as `REVIEW.yaml`: the string already is the
+   too, for the same reason as `REVIEW.json`: the string already is the
    whole thing that will run. **One shape of `--verify` command is the
    exception: a package-manager invocation of a named script in the
    reviewed repo's own `package.json`** — `npm run <name>`, the bare `npm
@@ -731,7 +751,7 @@ references.
    one — the human already authorized running the command by typing it, so
    nobody should "fix" this by adding a prompt here. Every other `--verify`
    command — a raw shell command, a direct binary invocation, a `make`
-   target — carries no such gap, for the same reason `REVIEW.yaml` doesn't:
+   target — carries no such gap, for the same reason `REVIEW.json` doesn't:
    the string already is the whole thing being authorized, and needs no
    further resolution.
 
@@ -1328,7 +1348,7 @@ Five things this step must still do, beyond what §5 itself specifies:
 - Render the `### Lenses` section from Step 2's `lenses` keys and its
   `disabledLenses` array, per `output-format.md` §5. It always prints. When
   `disabledLenses` is non-empty, the reviewed repo switched off one of
-  `loupe`'s own base lenses in its `REVIEW.yaml`, and the report must say
+  `loupe`'s own base lenses in its `REVIEW.json`, and the report must say
   which — a repo can disable the very lens that would have reviewed its
   `verify:` payload, and the three buckets cannot distinguish "that lens
   found nothing" from "that lens never ran". Likewise for `shadowedLenses`:

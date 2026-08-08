@@ -2,27 +2,26 @@
 
 In addition to the base lenses (`review-lenses.md`), `loupe` picks up
 custom review lenses from the **reviewed repository's own**
-`REVIEW.yaml` (this file lives at the root of the project being reviewed,
+`REVIEW.json` (this file lives at the root of the project being reviewed,
 not in `loupe` itself). This document explains where those lenses come
 from, how a reviewer subagent should apply one, and the exact citation
 format a custom-lens finding must use.
 
 ## 1. Source format
 
-`REVIEW.yaml` holds a top-level `instructions:` sequence. Each item is a
+`REVIEW.json` holds a top-level `instructions` array. Each item is a
 named group:
 
-```yaml
-instructions:
-  - name: TypeScript Quality
-    fileFilters:
-      - "**/*.ts"
-      - "!**/*.test.ts"
-    instructions: |
-      Enforce our TypeScript conventions: no `any` used to silence the compiler
-      (prefer `unknown` plus narrowing), explicit return types on exported
-      functions, and no non-null `!` assertions that paper over a
-      possibly-undefined value.
+```json
+{
+  "instructions": [
+    {
+      "name": "TypeScript Quality",
+      "fileFilters": ["**/*.ts", "!**/*.test.ts"],
+      "instructions": "Enforce our TypeScript conventions: no `any` used to silence the compiler (prefer `unknown` plus narrowing), explicit return types on exported functions, and no non-null `!` assertions that paper over a possibly-undefined value."
+    }
+  ]
+}
 ```
 
 - `name` — a free-text identifier for the group. This exact string becomes
@@ -72,50 +71,80 @@ instructions:
 
 **Disabling base lenses.** Custom lenses run *in addition* to the built-in
 lenses. To drop a built-in lens — to remove it, or to replace it with your own
-differently-named lens — add a top-level `disableDefaultLenses:` list (block
-sequence or inline `[a, b]`; names matched case-insensitively) alongside
-`instructions:`:
+differently-named lens — add a top-level `disableDefaultLenses` array (names
+matched case-insensitively) alongside `instructions`:
 
-```yaml
-disableDefaultLenses:
-  - performance
-instructions:
-  - name: ...
+```json
+{
+  "disableDefaultLenses": ["performance"],
+  "instructions": [ { "name": "..." } ]
+}
 ```
 
 **Pinning the verification commands.** A third optional top-level key,
-`verify:`, is a list of shell commands `loupe` runs after each fix pass to
+`verify`, is a list of shell commands `loupe` runs after each fix pass to
 confirm its own fixes didn't break the repo (`SKILL.md` Step 7). They run in
 the order given and stop at the first failure `loupe` itself introduced; a
 command that was already red before the run doesn't halt the rest. Writing the
-key with an empty list (`verify: []`) opts the repo out of the gate — the key's
-presence is what counts, so that is never mistaken for an absent key and never
-falls back to autodetection. Absent the key entirely, `loupe` autodetects a
-typecheck/lint/test command from the repo's `package.json` scripts or
+key with an empty array (`"verify": []`) opts the repo out of the gate — the
+key's presence is what counts, so that is never mistaken for an absent key and
+never falls back to autodetection. Absent the key entirely, `loupe` autodetects
+a typecheck/lint/test command from the repo's `package.json` scripts or
 `Makefile` targets; set it explicitly when that guess would be wrong:
 
-```yaml
-verify:
-  - npm run typecheck
-  - npm test
+```json
+{ "verify": ["npm run typecheck", "npm test"] }
 ```
 
 Unlike everything else in this file, these are **not** prompt text for a
 reviewing model — they are strings handed to a shell on the reviewer's
-machine. Two consequences follow, and they are the reason `verify:` is not
+machine. Two consequences follow, and they are the reason `verify` is not
 governed by the same trust note as custom-lens `instructions`:
 
 - Before the first one runs, `loupe` prints the resolved list and asks the
   human to authorize it (`SKILL.md` Step 6, the consent gate). Declining
-  continues the run with the gate off. Shipping a `verify:` list is a request,
+  continues the run with the gate off. Shipping a `verify` list is a request,
   not an authorization.
 - Under `--all` the list is **not resolved at all**; only the reviewer's own
   `--verify` enables the gate there. `SKILL.md`'s verification safety rule
   carries the reasoning.
 
+## 1a. Input forms and malformed handling
+
+**This table is the single source of truth for what a repo may legally
+*write* in `REVIEW.json`, and what happens when it writes something else —
+it is not about the shape `build-context.mjs` hands back internally.** That
+output shape — `{ instructions, verify, disableDefaultLenses }`, always
+present in that exact form even when nothing parsed — is defined once, in
+the block comment above `parseConfig` in `build-context.mjs`, and is a
+**different contract** from the one below: this table describes the repo's
+own file on disk as written; that comment describes what `build-context.mjs`
+does with it afterward. Don't merge the two — a "legal input form" here and
+a "field on the parsed config" there answer different questions, even where
+they share a name like `verify`.
+
+Every malformed form below produces a *notice* (`{ path, reason }`) rather
+than an error that stops the run. How those notices render in the final
+report is `references/output-format.md` §5's job (see its Config notices
+entry), not this file's. The `reason` values themselves are likewise defined
+once, in `parseConfig`'s own comment in `build-context.mjs` — this table
+names them for context but does not redefine them.
+
+| Key | Legal forms | Malformed form → what happens |
+|---|---|---|
+| *(whole file)* | A JSON object at the top level. | Text that isn't valid JSON at all — including an empty file, which `JSON.parse` rejects the same way as garbage — → `parse-error` at path `""`. Valid JSON whose top level isn't an object (an array, `null`, a bare string or number) → `shape-invalid` at path `""`. Either way the whole config is treated as absent: `instructions: []`, `verify` unset, `disableDefaultLenses: []` — nothing is rescued from a file rejected at this level. |
+| *(no `REVIEW.json`, but a leftover `REVIEW.yaml` exists)* | N/A — `REVIEW.yaml` is the legacy filename; see the migration note in `README.md`. | Not read at all → `yaml-unsupported` at path `"REVIEW.yaml"`. Custom lenses, `disableDefaultLenses`, and `verify` are all ignored for this repo until it has a valid `REVIEW.json`. |
+| `instructions` | An array of group objects (see the JSON example above). | Present but not an array → `shape-invalid` at `instructions`; the whole key drops to `[]`. |
+| `instructions[i]` | An object with a non-empty string `name` and a non-empty string `instructions`; `fileFilters`, `agent`, `reference` optional. | `name` or `instructions` missing, not a string, or a whitespace-only string (including a group that is itself a number, boolean, array, or `null`) → `item-dropped` at `instructions[i]` — only that one group is dropped; the rest of the array still parses. |
+| `instructions[i].fileFilters` | Omitted, `null`, a single string, or an array of strings (a leading `!` marks an exclude). | A non-string element inside the array → `item-dropped` at `instructions[i].fileFilters[j]` — that element only. **A whole-value type error (e.g. `"fileFilters": 5`) degrades to `[]` — no include/exclude patterns — with no notice at all:** this is the one form in this table that is silently dropped rather than disclosed. |
+| `instructions[i].agent` / `instructions[i].reference` | Optional strings. | Not validated at all — whatever is present is used verbatim, string or not; no notice either way. |
+| `verify` | Omitted, `null`, a single string, or an array of strings. | A non-string element inside the array → `item-dropped` at `verify[i]`. **Present but neither `null`, a string, nor an array (e.g. `"verify": 5`, `"verify": true`, `"verify": {}`) → `verify-type-invalid` at `verify` — and this is *not* an opt-out.** It falls through to autodetection exactly as if the key were absent: the resolved command list comes from `package.json`/`Makefile` instead, and the human sees that autodetected list at the consent gate (`SKILL.md` Step 6) with the `verify-type-invalid` notice attached alongside it. Reporting a type error as "opted-out" would tell the reader the repo *declined* verification when it actually wrote something invalid — two different facts the notice keeps apart. |
+| `disableDefaultLenses` | Omitted, `null`, a single string, or an array of strings. | A non-string element inside the array → `item-dropped` at `disableDefaultLenses[i]`. A whole-value type error degrades to `[]` — no notice — same as `fileFilters` above, but for a deliberately different reason: dropping this key's value entirely means *no* base lens gets disabled, which is the safe direction (more review, not less), so unlike `verify` it needs no `-type-invalid` counterpart to warn about silently opting out of something. |
+| any string inside an array-of-strings value (`verify`, `disableDefaultLenses`, `fileFilters`) | A non-empty (after trimming) string. | An empty or whitespace-only string is dropped silently, the same as if it were never written — this is normal, accepted input, not a malformed form; noted here only so it isn't mistaken for a missed `item-dropped` case. |
+
 ## 2. How `build-context.mjs` turns this into lenses
 
-1. `loadCustomInstructions()` parses the YAML and, per group, splits
+1. `loadCustomInstructions()` parses the JSON and, per group, splits
    `fileFilters` into `include_patterns` (entries without `!`) and
    `exclude_patterns` (entries with `!`, stripped of the prefix).
 2. `buildLenses()` filters the repo's changed, reviewable files against
@@ -137,10 +166,14 @@ governed by the same trust note as custom-lens `instructions`:
    group — not the full changed set.
 4. If **no** changed file matches a group, no lens is created for it that
    iteration — the group is silently skipped, not reported as an error.
-5. If `REVIEW.yaml` doesn't exist, or fails to parse,
-   `loadCustomInstructions()` returns `[]`: no custom lenses run
-   that iteration, only the base lenses do. This is not an error
-   condition either.
+5. If `REVIEW.json` doesn't exist, and there's no leftover `REVIEW.yaml`
+   either, `loadCustomInstructions()` returns `[]` with no notices: no
+   custom lenses run that iteration, only the base lenses do, and there is
+   nothing to disclose. If the file exists but fails to parse, or a leftover
+   `REVIEW.yaml` exists in its place, the lens list is still `[]`, but now
+   accompanied by a notice (`parse-error`/`shape-invalid`, or
+   `yaml-unsupported`) rather than being silent about it — see §1a above for
+   the full table of malformed forms.
 
 A file can match more than one group's `fileFilters`. When that happens, the
 file appears in more than one lens's `files` list — once per matching
@@ -178,14 +211,14 @@ Every finding produced by a custom lens must format its `comment` field as:
 According to custom instructions in '<name>' (<paraphrase>): <comment>
 ```
 
-- `<name>` — the exact lens name (the YAML group's `name`, unchanged —
+- `<name>` — the exact lens name (the JSON group's `name`, unchanged —
   matches the `lens` field and the `lenses` object key from
   `build-context.mjs`).
 - `<paraphrase>` — a short, few-word restatement of *which* directive
   within the group's `instructions` block justifies this specific finding.
   Since a group's `instructions` can bundle multiple rules, the paraphrase
   lets a human reading the report see which one applied without opening
-  the YAML file.
+  the JSON file.
 - `<comment>` — the normal explanation of what's wrong here and why, same
   as any other finding's comment.
 

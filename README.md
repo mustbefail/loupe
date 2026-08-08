@@ -56,10 +56,10 @@ not just recent changes? Pass `--all` — `loupe` diffs against git's empty
 tree, so every tracked file is treated as newly added and gets reviewed. The
 repository still needs to be a git repo (that safety rule doesn't change);
 for a plain directory, run `git init && git add -A` first, then invoke
-`loupe --all`. Trust note: `loupe` still reads that repo's own `REVIEW.yaml`
+`loupe --all`. Trust note: `loupe` still reads that repo's own `REVIEW.json`
 if it has one — its custom-lens instructions and `disableDefaultLenses` are
 honored the same as in any other mode — so only point `--all` at a
-repository whose `REVIEW.yaml` you trust.
+repository whose `REVIEW.json` you trust.
 
 ### Local development
 
@@ -93,7 +93,7 @@ very diff you are reviewing, and including uncommitted files. So `loupe`
 time a fix is about to land. Decline and the run continues as if
 `--no-verify` had been passed, with the declined list recorded in the report.
 
-Set `verify:` in `REVIEW.yaml` to override the guess, `--verify <cmd>` for a
+Set `verify:` in `REVIEW.json` to override the guess, `--verify <cmd>` for a
 one-off (yours, so it's disclosed but not queried), `--no-verify` to switch the
 gate off. Nothing is executed until a fix is actually about to be dispatched —
 a review that finds nothing worth fixing runs no repo commands at all.
@@ -106,36 +106,35 @@ your own uncommitted changes, so undoing a bad fix could take your work with
 it. That call stays yours, same as committing.
 
 Under `--all`, **nothing the repo supplies is resolved at all** — neither an
-autodetected script nor its own `REVIEW.yaml` `verify:` list. That mode is for
+autodetected script nor its own `REVIEW.json` `verify:` list. That mode is for
 a repo nobody has vetted yet, and a `verify:` entry is a string handed to a
 shell on your machine, not prompt text handed to a reviewing model the way
 custom-lens instructions are; the two are not the same trust decision. Only
 your own `--verify` enables the gate there.
 
-## External rules: `REVIEW.yaml`
+## External rules: `REVIEW.json`
 
 `loupe` ships five built-in lenses, defined in the skill's own
-`rules/default.yaml`: `correctness`, `security`, `performance`, and
+`rules/default.json`: `correctness`, `security`, `performance`, and
 `maintainability` run on every changed file, and `devops` runs when the diff
 touches infrastructure/CI files (Dockerfiles, Compose, Terraform, GitHub
 Actions, Ansible, Kubernetes, CDK, …). See `references/review-lenses.md` for
 each lens's checklist.
 
 On top of those, `loupe` picks up per-repo custom lenses from an optional
-`REVIEW.yaml` at the root of the repository being reviewed. If the file
+`REVIEW.json` at the root of the repository being reviewed. If the file
 doesn't exist, only the built-in lenses run. Each entry becomes its own lens:
 
-```yaml
-instructions:
-  - name: TypeScript Quality
-    fileFilters:
-      - "**/*.ts"
-      - "!**/*.test.ts"
-    instructions: |
-      Enforce our TypeScript conventions: no `any` used to silence the
-      compiler (prefer `unknown` plus narrowing), explicit return types on
-      exported functions, and no non-null `!` assertions that paper over a
-      possibly-undefined value.
+```json
+{
+  "instructions": [
+    {
+      "name": "TypeScript Quality",
+      "fileFilters": ["**/*.ts", "!**/*.test.ts"],
+      "instructions": "Enforce our TypeScript conventions: no `any` used to silence the compiler (prefer `unknown` plus narrowing), explicit return types on exported functions, and no non-null `!` assertions that paper over a possibly-undefined value."
+    }
+  ]
+}
 ```
 
 - `name` — free-text identifier; also shown in the lens's findings. Custom
@@ -148,33 +147,38 @@ instructions:
   the lens to every file.
 - `agent` *(optional)* — which reviewer runs the lens: `code-reviewer`
   (default), `security-reviewer`, or `general-purpose`.
-- `instructions` — the rules to enforce; a `|` block can bundle several, each
-  checked and reported independently.
+- `instructions` — the rules to enforce, as a single string; it can bundle
+  several directives in one block, each checked and reported independently.
 
 To turn a built-in lens **off** entirely (rather than replace it), add a
-top-level `disableDefaultLenses:` list (names are case-insensitive):
+top-level `disableDefaultLenses` array (names are case-insensitive):
 
-```yaml
-disableDefaultLenses:
-  - performance
+```json
+{ "disableDefaultLenses": ["performance"] }
 ```
 
 To pin the verification commands instead of letting `loupe` guess them, add a
-top-level `verify:` list. They run in the order given and stop at the first
+top-level `verify` array. They run in the order given and stop at the first
 failure `loupe` itself introduced; a command that was already red before the
-run doesn't halt the rest, so put the cheap checks first. An empty list
-(`verify: []`) opts out of the gate without turning off autodetection
+run doesn't halt the rest, so put the cheap checks first. An empty array
+(`"verify": []`) opts out of the gate without turning off autodetection
 elsewhere:
 
-```yaml
-verify:
-  - npm run typecheck
-  - npm test
+```json
+{ "verify": ["npm run typecheck", "npm test"] }
 ```
 
-A fuller, commented example lives in [`examples/REVIEW.yaml`](examples/REVIEW.yaml).
-See `references/custom-instructions.md` for the citation convention custom-lens
+A fuller example lives in [`examples/REVIEW.json`](examples/REVIEW.json). See
+`references/custom-instructions.md` for the citation convention custom-lens
 findings use and how matching interacts with the base lenses.
+
+**Migrating from `REVIEW.yaml`:** if a repo has a leftover `REVIEW.yaml` and no
+`REVIEW.json`, `loupe` does not read it — its custom lenses,
+`disableDefaultLenses`, and `verify` are all ignored, and the report discloses
+a `yaml-unsupported` notice for it instead. Renaming the file to `REVIEW.json`
+is not enough on its own: the *contents* must be valid JSON too (no `#`
+comments, no `|`/`>` block scalars, no unquoted keys) — see the JSON examples
+above.
 
 ## Known limitations
 
