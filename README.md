@@ -190,6 +190,17 @@ above.
 - A verification command that was already failing before the run makes the gate blind for that command: a regression inside an already-red test suite can't be distinguished from the failure that was there first.
 - `--all` reviews every tracked file, so on a large repository it produces a correspondingly large per-lens context; it's most useful on small-to-medium codebases. Glob-scoped lenses (e.g. `devops`) partially bound the cost, since they only run on their matching files.
 
+## Follow-ups
+
+Known, deliberately deferred, and cheap to fix when they start to matter:
+
+- `build-context.mjs` reads and parses the reviewed repo's `REVIEW.json` three
+  times per run — once each for custom lenses, disabled lenses, and the verify
+  list. They share one loader, so the duplication is a repeated call rather than
+  repeated logic; memoizing per repo path would collapse it. Harmless today (the
+  file is small and the notices are deduplicated before output), noticeable only
+  if the config grows.
+
 ## Acknowledgements
 
 `loupe` was built under the inspiration of GitLab Duo's code reviewer — its
