@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // build-context.mjs — deterministic review-context builder for the `loupe` skill.
 // Parses `git diff base..HEAD`, excludes generated files, matches this repo's own
-// REVIEW.yaml custom rules to the changed files, and emits per-lens, LLM-facing
+// REVIEW.json custom rules to the changed files, and emits per-lens, LLM-facing
 // context (diff parsing, generated-file exclusion, custom-instruction matching,
 // tagged-diff formatting) — no API calls or prompt rendering here; those are
 // handled by Claude subagents.
@@ -130,86 +130,138 @@ export function matchesInstruction(path, ins) {
   return inc && !exc
 }
 
-function unquote(s) {
-  const m = s.match(/^"(.*)"$/) || s.match(/^'(.*)'$/)
-  return m ? m[1] : s.trim()
-}
-
-// Strips a trailing inline `# comment` from a scalar value: the `#` only starts
-// a comment when it is preceded by whitespace and sits outside any quoted span.
-// A `#` with no leading space, or one inside quotes, is left as literal text.
-function stripInlineComment(s) {
-  let inSingle = false, inDouble = false
-  for (let i = 0; i < s.length; i++) {
-    const c = s[i]
-    if (c === "'" && !inDouble) inSingle = !inSingle
-    else if (c === '"' && !inSingle) inDouble = !inDouble
-    else if (c === "#" && !inSingle && !inDouble && i > 0 && /\s/.test(s[i - 1])) return s.slice(0, i)
+// parseConfig(text) parses a REVIEW.json/default.json-shaped JSON config into
+// { config, notices }. This is the one place that decides whether a piece of
+// the config is usable — the loader that discovers a problem is the loader
+// that reports it, rather than a separate detector re-deriving the same
+// reject predicate later (that duplication is exactly what this migration
+// removes). `config` always has the shape `{ instructions, verify,
+// disableDefaultLenses }`, even when nothing parsed — `instructions: []`,
+// `verify: { items: [], present: false }`, `disableDefaultLenses: []` — so a
+// caller never has to branch on whether parsing succeeded before reading a
+// key off the result.
+//
+// `notices` is a flat array of `{ path, reason }`. `path` locates the
+// problem: a position inside the parsed config (e.g. `"instructions[2]"`,
+// `"verify[0]"`) for anything parseConfig itself found while walking the
+// config, or the empty string `""` for a whole-file problem with no such
+// position. `reason` is one of exactly these five values, defined here and
+// nowhere else:
+//
+//   yaml-unsupported     the repo has a REVIEW.yaml and no REVIEW.json. Never
+//                         produced by parseConfig itself — it only ever sees
+//                         the text of a file that exists. The caller that
+//                         resolves the path (loadReviewConfig below) emits
+//                         this when it finds that condition instead.
+//   parse-error           the file exists but `JSON.parse` threw (including
+//                         an empty file, which throws the same way).
+//   shape-invalid         parsed, but the top level is not an object, or
+//                         `instructions` is present and not an array.
+//   item-dropped          an individual lens or list element was rejected.
+//   verify-type-invalid   `verify` is present but is neither a string, an
+//                         array, nor `null`.
+export function parseConfig(text) {
+  const empty = { instructions: [], verify: { items: [], present: false }, disableDefaultLenses: [] }
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return { config: empty, notices: [{ path: "", reason: "parse-error" }] }
   }
-  return s
-}
-
-// Cleans a raw captured scalar: strip an inline comment, then unquote.
-function clean(s) {
-  return unquote(stripInlineComment(s).trim())
-}
-
-// Targeted parser for REVIEW.yaml: a top-level `instructions:` sequence of
-// mappings, each with `name`, `fileFilters` (sequence) and `instructions`
-// (block literal `|`). Not a general YAML parser.
-export function parseInstructionsYaml(text) {
-  const items = []
-  let cur = null, mode = null, keyIndent = null, blockLines = null
-
-  // The block ends when a non-blank line is indented at or below the
-  // `instructions:` key itself, so a later line indented less than the
-  // block's first content line (but still more than the key) is not lost.
-  function flushBlock() {
-    if (!cur || blockLines === null) return
-    let minIndent = null
-    for (const l of blockLines) {
-      if (l.trim() === "") continue
-      const indent = l.length - l.trimStart().length
-      if (minIndent === null || indent < minIndent) minIndent = indent
-    }
-    if (minIndent === null) minIndent = 0
-    cur.instructions = blockLines.map((l) => (l.trim() === "" ? "" : l.slice(minIndent))).join("\n") + "\n"
-    blockLines = null
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { config: empty, notices: [{ path: "", reason: "shape-invalid" }] }
   }
 
-  for (const raw of text.split("\n")) {
-    const line = raw.replace(/\r$/, "")
-    if (mode === "instructions") {
-      if (line.trim() === "") { blockLines.push(""); continue }
-      const indent = line.length - line.trimStart().length
-      if (indent > keyIndent) { blockLines.push(line); continue }
-      flushBlock(); mode = null; keyIndent = null // block ends; reprocess this line below
-    }
-    const stripped = line.trim()
-    if (stripped === "" || stripped.startsWith("#") || stripped === "---") continue
-    const nameM = line.match(/^\s*-\s+name:\s*(.+?)\s*$/)
-    if (nameM) { cur = { name: clean(nameM[1]), fileFilters: [], instructions: "" }; items.push(cur); mode = null; continue }
-    if (!cur) continue
-    const agentM = line.match(/^\s*agent:\s*(.+?)\s*$/)
-    if (agentM) { cur.agent = clean(agentM[1]); mode = null; continue }
-    const refM = line.match(/^\s*reference:\s*(.+?)\s*$/)
-    if (refM) { cur.reference = clean(refM[1]); mode = null; continue }
-    if (/^\s*fileFilters:\s*$/.test(line)) { mode = "fileFilters"; continue }
-    const blockM = line.match(/^(\s*)instructions:\s*\|\s*$/)
-    if (blockM) { mode = "instructions"; keyIndent = blockM[1].length; blockLines = []; continue }
-    const inlineInstr = line.match(/^\s*instructions:\s*(.+?)\s*$/)
-    if (inlineInstr) { cur.instructions = clean(inlineInstr[1]); mode = null; continue }
-    if (mode === "fileFilters") {
-      const fM = line.match(/^\s*-\s*(.+?)\s*$/)
-      if (fM) cur.fileFilters.push(clean(fM[1]))
+  const notices = []
+
+  // `instructions` — an element is dropped when `name` or `instructions` is
+  // not a non-empty string. The type is checked before `.trim()` is called on
+  // either: a JSON value can legally be a number, a boolean, or an object
+  // where a YAML capture group could not, so `{"instructions": 5}` must be
+  // rejected by type, not by calling a string method on it and throwing.
+  let instructions = []
+  if ("instructions" in parsed) {
+    if (!Array.isArray(parsed.instructions)) {
+      notices.push({ path: "instructions", reason: "shape-invalid" })
+    } else {
+      instructions = parsed.instructions.flatMap((item, i) => {
+        if (
+          item === null || typeof item !== "object" || Array.isArray(item) ||
+          typeof item.name !== "string" || item.name.trim() === "" ||
+          typeof item.instructions !== "string" || item.instructions.trim() === ""
+        ) {
+          notices.push({ path: `instructions[${i}]`, reason: "item-dropped" })
+          return []
+        }
+        const { items: fileFilters, notices: filterNotices } = normalizeList(item.fileFilters)
+        for (const n of filterNotices) notices.push({ path: `instructions[${i}].fileFilters${n.path}`, reason: n.reason })
+        return [{ name: item.name, agent: item.agent, reference: item.reference, instructions: item.instructions, fileFilters }]
+      })
     }
   }
-  flushBlock()
-  // A lens needs a name and instructions; fileFilters are optional (absent = all files).
-  return items.filter((i) => i.name && i.instructions.trim())
+
+  // `verify` — a value that isn't `null`, a string, or an array is a type
+  // error (`verify-type-invalid`), never silently read as an opt-out: `5` is
+  // a mistake, not a decision to skip verification, and reporting it as
+  // `opted-out` would tell a human the repo declined verification when it
+  // actually wrote something invalid.
+  let verify = { items: [], present: false }
+  if ("verify" in parsed) {
+    const v = parsed.verify
+    if (v === null || typeof v === "string" || Array.isArray(v)) {
+      const { items, notices: verifyNotices } = normalizeList(v)
+      verify = { items, present: true }
+      for (const n of verifyNotices) notices.push({ path: `verify${n.path}`, reason: n.reason })
+    } else {
+      notices.push({ path: "verify", reason: "verify-type-invalid" })
+      verify = { items: [], present: true }
+    }
+  }
+
+  // `disableDefaultLenses` — same normalization as `verify`, but the
+  // fail-safe direction is the OPPOSITE of `verify`'s: dropping an entry here
+  // means that base lens is NOT disabled, i.e. *more* review runs, which is
+  // the safe direction. That's why there is no `disableDefaultLenses`
+  // equivalent of `verify-type-invalid` below — a wholly wrong-typed value
+  // degrades to "disable nothing" with no notice, never to "skip a lens the
+  // repo didn't actually ask to skip". Do not copy verify's stricter handling
+  // here later; the two keys fail in opposite directions on purpose.
+  let disableDefaultLenses = []
+  if ("disableDefaultLenses" in parsed) {
+    const { items, notices: disableNotices } = normalizeList(parsed.disableDefaultLenses)
+    disableDefaultLenses = items
+    for (const n of disableNotices) notices.push({ path: `disableDefaultLenses${n.path}`, reason: n.reason })
+  }
+
+  return { config: { instructions, verify, disableDefaultLenses }, notices }
 }
 
-// Normalizes a parsed YAML item into a lens definition. `fileFilters` split into
+// Normalizes a config value that is expected to be a list of strings:
+// `null`/absent → `[]`; a bare string → a one-item list (dropped to `[]` if
+// it's empty/whitespace-only); an array → its string elements, with a
+// trimmed-empty string silently dropped (same as absent — "" is not a
+// runnable command or a real lens name) and any non-string element dropped
+// with an `item-dropped` notice at that index; anything else (the value is
+// wholly the wrong type) → `[]` with no notice — whether a whole-value type
+// error deserves its own notice is the caller's call, not this function's
+// (`verify` wants one, `disableDefaultLenses` deliberately does not; see
+// parseConfig above).
+export function normalizeList(value) {
+  if (value == null) return { items: [], notices: [] }
+  if (typeof value === "string") return { items: value.trim() ? [value] : [], notices: [] }
+  if (Array.isArray(value)) {
+    const items = []
+    const notices = []
+    value.forEach((v, i) => {
+      if (typeof v === "string") { if (v.trim()) items.push(v) }
+      else notices.push({ path: `[${i}]`, reason: "item-dropped" })
+    })
+    return { items, notices }
+  }
+  return { items: [], notices: [] }
+}
+
+// Normalizes a parsed config item into a lens definition. `fileFilters` split into
 // include/exclude (a leading `!` marks an exclude); `agent` defaults to code-reviewer.
 function toLensDef(i, type) {
   return {
@@ -223,160 +275,65 @@ function toLensDef(i, type) {
   }
 }
 
-// Bundled default lenses (correctness/security/performance/devops), shipped in
-// rules/default.yaml next to this skill. Same YAML schema as a repo's REVIEW.yaml,
-// plus optional `agent` (which reviewer runs the lens) and `reference` (its section
-// in references/review-lenses.md). Tagged type "base".
+// Reads and parses the reviewed repo's own REVIEW.json, if it has one.
+// Shared by the three independent readers of that file below
+// (loadCustomInstructions, loadDisabledLenses, and the verify-resolution
+// branch of detectVerifyCommands) so the "does this repo even have a config,
+// and is it the current file name" check lives in one place rather than
+// three. Each of those three still calls this — and therefore parseConfig —
+// separately, once per key it cares about; main() is what deduplicates the
+// resulting notices afterwards (see its own comment).
+function loadReviewConfig(repo, deps) {
+  const empty = { instructions: [], verify: { items: [], present: false }, disableDefaultLenses: [] }
+  const file = join(repo, "REVIEW.json")
+  if (!deps.existsSync(file)) {
+    // A leftover REVIEW.yaml from before this migration is not read at all —
+    // this is the one legitimate surviving reference to that filename, and it
+    // exists to tell a repo it has one, not to parse it.
+    if (deps.existsSync(join(repo, "REVIEW.yaml"))) {
+      return { config: empty, notices: [{ path: "REVIEW.yaml", reason: "yaml-unsupported" }] }
+    }
+    return { config: empty, notices: [] }
+  }
+  return parseConfig(deps.readFileSync(file, "utf8"))
+}
+
+// Bundled default lenses (correctness/security/performance/maintainability/
+// devops), shipped in rules/default.json next to this skill. Same JSON schema
+// as a repo's own REVIEW.json, plus optional `agent` (which reviewer runs the
+// lens) and `reference` (its section in references/review-lenses.md). Tagged
+// type "base".
+//
+// Throws when the bundled file is missing, or when it parses to something
+// unusable (`parse-error`/`shape-invalid`) — this file ships with the skill
+// and is never user-supplied, so either condition is a packaging defect, not
+// something to degrade past silently: shipping zero base lenses while every
+// existing test still passes is exactly the failure this migration cannot
+// afford. `process.exit` belongs to `main()`, not here — this function is
+// also called directly by tests, and exiting the process here would kill the
+// test runner along with the `deps` injection seam.
 export function loadDefaultLenses(deps = { readFileSync, existsSync }) {
-  const file = fileURLToPath(new URL("../rules/default.yaml", import.meta.url))
-  if (!deps.existsSync(file)) { console.error("loupe: default lenses not found at rules/default.yaml"); return [] }
-  let parsed
-  try { parsed = parseInstructionsYaml(deps.readFileSync(file, "utf8")) } catch { return [] }
-  return parsed.map((i) => toLensDef(i, "base"))
+  const file = fileURLToPath(new URL("../rules/default.json", import.meta.url))
+  if (!deps.existsSync(file)) throw new Error("default lenses not found at rules/default.json")
+  const { config, notices } = parseConfig(deps.readFileSync(file, "utf8"))
+  if (notices.some((n) => n.reason === "parse-error" || n.reason === "shape-invalid")) {
+    throw new Error("bundled rules/default.json failed to parse")
+  }
+  return { lenses: config.instructions.map((i) => toLensDef(i, "base")), notices }
 }
 
-// Per-repo custom lenses from the reviewed repo's own REVIEW.yaml. Tagged type "custom".
+// Per-repo custom lenses from the reviewed repo's own REVIEW.json. Tagged
+// type "custom".
 export function loadCustomInstructions(repo, deps = { readFileSync, existsSync }) {
-  const file = join(repo, "REVIEW.yaml")
-  if (!deps.existsSync(file)) return []
-  let parsed
-  try { parsed = parseInstructionsYaml(deps.readFileSync(file, "utf8")) } catch { return [] }
-  return parsed.map((i) => toLensDef(i, "custom"))
+  const { config, notices } = loadReviewConfig(repo, deps)
+  return { lenses: config.instructions.map((i) => toLensDef(i, "custom")), notices }
 }
 
-// Reads a top-level `<key>:` value from REVIEW.yaml as a list of scalars — a
-// block sequence, the inline `[a, b]` form, or a single bare scalar (`key:
-// value`), which resolves to a one-item list. `key` is always a literal
-// identifier here, so it needs no regex escaping. Block items may sit at any
-// indent, including column 0 (`key:` then `- item`), which is valid YAML.
-//
-// Returns `{ items, present }`. `present` answers "does this key appear at
-// the top level at all", independent of how many items it resolved to — a
-// caller like `detectVerifyCommands` needs that to tell a deliberate
-// `verify: []` (opt-out) from the key being absent entirely (autodetect).
-// This is the one place that encodes what a top-level `key:` line looks
-// like; a caller must never grow its own copy of that regex to answer the
-// same question — that duplication is how key-presence and list-parsing
-// used to drift apart (a bare scalar like `verify: npm test` used to satisfy
-// a separate presence check but not this function's list forms, so it
-// silently resolved to zero items and got reported as an opt-out).
-//
-// A bare block-scalar indicator (`verify: |`, `verify: >`, with an optional
-// chomping/indentation suffix in either order YAML permits — `|2-` or `|-2`
-// are both valid) is recognized as present but never taken as item text —
-// this parser does not support multi-line block scalars here (unlike
-// `parseInstructionsYaml`'s `instructions: |`), so treating the `|` itself
-// as a one-item command would silently hand a shell the literal `|`. That
-// holds for **every** form, not just the bare-scalar one: an indicator can
-// also arrive as an inline-list element (`verify: [|, npm test]`) or as a
-// sequence item (`- |`), so the check lives where items are added.
-// Splits an inline-list body on the commas that are actually separators — the
-// ones outside quotes. A verify command carries commas of its own often enough
-// to matter (`npm test -- --grep "parse,dedup"`, `nyc --reporter=text,lcov`),
-// and a bare `.split(",")` tears one command into fragments that `clean()` then
-// unquotes into things a shell will still run: half a command, plus a stray
-// `dedup"` it would try to execute. Quote tracking is the same shallow model
-// `stripInlineComment` already uses on the same text, deliberately: no nesting,
-// and **no escape handling**, so a backslash-escaped quote inside a
-// double-quoted item (`"--grep \"a,b\""`) closes the quote early and splitting
-// resumes. Matching that function matters more than covering the case —
-// `unquote` cannot unescape it either, so handling it here alone would only
-// move where the same string comes out wrong. An unterminated quote absorbs the
-// rest of the line into a single item, which fails toward one unrunnable string
-// rather than several runnable ones.
-function splitInlineItems(body) {
-  const out = []
-  let cur = "", quote = null
-  for (const ch of body) {
-    if (quote) {
-      cur += ch
-      if (ch === quote) quote = null
-    } else if (ch === '"' || ch === "'") {
-      quote = ch
-      cur += ch
-    } else if (ch === ",") {
-      out.push(cur)
-      cur = ""
-    } else cur += ch
-  }
-  out.push(cur)
-  return out
-}
-
-export function parseTopLevelList(text, key) {
-  const out = []
-  let present = false
-  const inlineRe = new RegExp(`^${key}:\\s*\\[(.*)\\]\\s*$`)
-  const blockRe = new RegExp(`^${key}:\\s*$`)
-  const scalarRe = new RegExp(`^${key}:\\s*(.+?)\\s*$`)
-  const blockScalarIndicator = /^[|>](?:\d+[+-]?|[+-]\d*)?$/
-  // Every item, whatever form it arrived in, is added here. The block-scalar
-  // guard belongs at the one place items enter the list, not at one of the three
-  // sites that add them: it was first written into the bare-scalar branch alone,
-  // which left `verify: [|, npm test]` and a `- |` sequence item still handing a
-  // shell the literal indicator — the very outcome the guard exists to prevent.
-  const push = (captured) => {
-    const v = clean(captured)
-    if (v && !blockScalarIndicator.test(v)) out.push(v)
-  }
-  let inList = false
-  for (const raw of text.split("\n")) {
-    // Strip a trailing inline comment here, once, before any form is tested —
-    // not just inside clean() on an already-captured value. Otherwise a
-    // comment on the header line (`verify: [] # comment`, `verify: # comment`)
-    // defeats the inline-list and block matchers below and the line falls
-    // through to the scalar matcher as one bogus item (the comment text
-    // itself, or `["[]"]` — an opt-out read back as an opt-in).
-    const line = stripInlineComment(raw.replace(/\r$/, ""))
-    const inline = line.match(inlineRe)
-    if (inline) { present = true; for (const p of splitInlineItems(inline[1])) push(p); inList = false; continue }
-    if (blockRe.test(line)) { present = true; inList = true; continue }
-    if (inList) {
-      // A document separator ends the list — it is not an item. Checked before
-      // the item match because `---` otherwise satisfies it (dash + `--`) now
-      // that items may sit at zero indent.
-      if (line.trim() === "---") { inList = false; continue }
-      const m = line.match(/^\s*-\s*(.+?)\s*$/)
-      if (m) { push(m[1]); continue }
-      if (line.trim() === "" || line.trim().startsWith("#")) continue
-      inList = false
-    }
-    const scalar = line.match(scalarRe)
-    if (scalar) {
-      present = true
-      // `line` already had its inline comment stripped above, so `clean()`
-      // here only unquotes/trims — this still matters so a header like
-      // `verify: | # comment` (now just `verify: |` by the time it gets
-      // here) resolves to the bare indicator `|` and is caught below, rather
-      // than handing a shell the literal `|` as if it were a real command.
-      push(scalar[1])
-    }
-  }
-  return { items: out, present }
-}
-
-// The optional top-level `disableDefaultLenses:` key: base-lens names the repo
+// The optional top-level `disableDefaultLenses` key: base-lens names the repo
 // wants turned off entirely. Names are matched case-insensitively in main().
-export function parseDisabledLenses(text) {
-  return parseTopLevelList(text, "disableDefaultLenses").items
-}
-
-// The optional top-level `verify:` key: shell commands loupe runs after a fix
-// pass to catch regressions its own fixes introduced (SKILL.md Step 7).
-//
-// Test-only convenience over `parseTopLevelList`, unlike `parseDisabledLenses`
-// above, which is a real seam `loadDisabledLenses` calls. `detectVerifyCommands`
-// does not go through here: it needs `present` as well as the items, and this
-// wrapper discards it. Kept because the tests read better against a named
-// entry point — do not read its existence as meaning it is on the live path.
-export function parseVerifyCommands(text) {
-  return parseTopLevelList(text, "verify").items
-}
-
 export function loadDisabledLenses(repo, deps = { readFileSync, existsSync }) {
-  const file = join(repo, "REVIEW.yaml")
-  if (!deps.existsSync(file)) return []
-  try { return parseDisabledLenses(deps.readFileSync(file, "utf8")) } catch { return [] }
+  const { config, notices } = loadReviewConfig(repo, deps)
+  return { names: config.disableDefaultLenses, notices }
 }
 
 // Verification command groups, ordered cheapest-and-most-local first so the
@@ -416,8 +373,8 @@ export function parseMakefileTargets(text) {
   return out
 }
 
-// Resolves the verification commands for a repo. An explicit top-level `verify:`
-// list in REVIEW.yaml wins over autodetection; otherwise commands are
+// Resolves the verification commands for a repo. An explicit top-level `verify`
+// key in REVIEW.json wins over autodetection; otherwise commands are
 // autodetected from the repo's own package.json scripts or Makefile targets,
 // restricted to VERIFY_GROUPS.
 //
@@ -427,22 +384,26 @@ export function parseMakefileTargets(text) {
 //
 //   commands      Shell command strings, in run order. May be empty.
 //   source        Where the list came from — PROVENANCE ONLY, never a reason:
-//                 "REVIEW.yaml" | "package.json" | "Makefile" | null.
+//                 "REVIEW.json" | "package.json" | "Makefile" | null.
 //                 The orchestrator may substitute an object whose source is
 //                 "--verify" when the caller passed that argument; this
 //                 function never emits that value.
 //   skipped       Why there is nothing to run, or null when there is something:
 //                 "all-mode"     — under --all nothing the repo supplies is
 //                                  resolved at all
-//                 "opted-out"    — the repo wrote a `verify:` key resolving to
+//                 "opted-out"    — the repo wrote a `verify` key resolving to
 //                                  no commands, i.e. "do not verify"
-//                 "not-detected" — no `verify:` key and no recognized script
+//                 "not-detected" — no usable `verify` key and no recognized
+//                                  script (this also covers a `verify` key
+//                                  that failed to parse as a list at all —
+//                                  see `notices` below — so a type error
+//                                  never gets mistaken for "opted-out")
 //                 The two are independent: an opt-out has a real provenance
-//                 ("REVIEW.yaml") *and* a skip reason.
+//                 ("REVIEW.json") *and* a skip reason.
 //   repoSupplied  True when the list was read off the reviewed repo's disk. The
 //                 whitelist constrains the script *name*, never the body that
 //                 runs, so `npm run test` executes whatever that repo wrote,
-//                 and a `verify:` entry is an unfiltered shell string. This is
+//                 and a `verify` entry is an unfiltered shell string. This is
 //                 the flag the orchestrator's consent gate tests: this function
 //                 resolves candidates, it never authorizes them.
 //                 It is provenance and nothing else. Two readings the name
@@ -478,27 +439,46 @@ export function parseMakefileTargets(text) {
 //                 data: the consent gate must read *this* file's target recipe,
 //                 not assume a name, since a repo can ship more than one and
 //                 `make` only reads the first in that order.
+//   notices       This call's view of parseConfig's notices for this repo's
+//                 REVIEW.json (or the single `yaml-unsupported` notice when
+//                 there's a REVIEW.yaml and no REVIEW.json instead) — always
+//                 present, `[]` when there is nothing to report. Reading
+//                 REVIEW.json for `verify` also parses `instructions` and
+//                 `disableDefaultLenses`, so this can include notices that
+//                 have nothing to do with verification; main() is what
+//                 collects and deduplicates every loader's notices into the
+//                 single `configNotices` field on its own output (see that
+//                 comment). Always `[]` under --all, which does not read the
+//                 repo's REVIEW.json at all.
 //
-// Nothing the repo supplies is resolved under `--all`, its own `verify:` list
+// Nothing the repo supplies is resolved under `--all`, its own `verify` list
 // included; only the caller's own `--verify` enables the gate there. The
 // rationale for that lives in SKILL.md's safety rules, not here.
 export function detectVerifyCommands(repo, { all = false } = {}, deps = { readFileSync, existsSync }) {
-  if (all) return { commands: [], source: null, skipped: "all-mode", repoSupplied: false }
+  if (all) return { commands: [], source: null, skipped: "all-mode", repoSupplied: false, notices: [] }
 
-  const review = join(repo, "REVIEW.yaml")
-  if (deps.existsSync(review)) {
-    let explicit = [], present = false
-    try {
-      const parsed = parseTopLevelList(deps.readFileSync(review, "utf8"), "verify")
-      explicit = parsed.items; present = parsed.present
-    } catch { explicit = []; present = false }
+  const { config, notices } = loadReviewConfig(repo, deps)
+  // `present` alone can't tell a real (if empty) `verify` list apart from a
+  // `verify-type-invalid` one — parseConfig's `{ items, present }` shape is
+  // identical for both (see its own comment). A type error must not resolve
+  // to "opted-out": that would tell a human the repo declined verification
+  // when it actually wrote something invalid. So a type-invalid `verify` is
+  // treated as unusable here and falls through to autodetection below, same
+  // as if the key were absent — the problem itself is still surfaced via
+  // `notices`, just never silently relabeled as a deliberate opt-out.
+  const verifyTypeInvalid = notices.some((n) => n.path === "verify" && n.reason === "verify-type-invalid")
+  if (config.verify.present && !verifyTypeInvalid) {
     // Key presence, not list length, decides. A repo that writes `verify: []`
-    // is opting out, and the single-command shorthand `verify: npm test` is
+    // is opting out, and the single-command shorthand `verify: "npm test"` is
     // opting in to exactly that one command; falling through to autodetection
     // in either case would run commands the repo didn't ask for, or skip the
     // one command it did.
-    if (present) {
-      return { commands: explicit, source: "REVIEW.yaml", skipped: explicit.length ? null : "opted-out", repoSupplied: true }
+    return {
+      commands: config.verify.items,
+      source: "REVIEW.json",
+      skipped: config.verify.items.length ? null : "opted-out",
+      repoSupplied: true,
+      notices,
     }
   }
 
@@ -520,7 +500,7 @@ export function detectVerifyCommands(repo, { all = false } = {}, deps = { readFi
         .filter((k) => typeof scripts[k] === "string")
         .map((k) => [k, scripts[k]])),
     )
-    if (commands.length) return { commands, bodies, source: "package.json", skipped: null, repoSupplied: true }
+    if (commands.length) return { commands, bodies, source: "package.json", skipped: null, repoSupplied: true, notices }
   }
 
   // Order matters and is load-bearing: this must match GNU make's own resolution
@@ -535,9 +515,9 @@ export function detectVerifyCommands(repo, { all = false } = {}, deps = { readFi
     let targets = new Set()
     try { targets = parseMakefileTargets(deps.readFileSync(makefile, "utf8")) } catch { targets = new Set() }
     const commands = pickVerifyNames((n) => targets.has(n)).map((n) => `make ${n}`)
-    if (commands.length) return { commands, source: "Makefile", makefile: makefileRel, skipped: null, repoSupplied: true }
+    if (commands.length) return { commands, source: "Makefile", makefile: makefileRel, skipped: null, repoSupplied: true, notices }
   }
-  return { commands: [], source: null, skipped: "not-detected", repoSupplied: false }
+  return { commands: [], source: null, skipped: "not-detected", repoSupplied: false, notices }
 }
 
 // Diff line content is passed through raw (not HTML-escaped) because the consumer
@@ -592,6 +572,24 @@ export function buildLenses(reviewable, filesContent, lensDefs) {
   return lenses
 }
 
+// Merges notice arrays from every independent config reader into the single
+// `configNotices` field main() prints, deduplicated by `{ path, reason }`:
+// loadCustomInstructions, loadDisabledLenses and detectVerifyCommands each
+// parse the repo's REVIEW.json separately (see loadReviewConfig), so the same
+// problem in that one file surfaces once per reader — up to three times over
+// — before this collapses it back to one.
+function dedupeNotices(notices) {
+  const seen = new Set()
+  const out = []
+  for (const n of notices) {
+    const key = `${n.path} ${n.reason}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(n)
+  }
+  return out
+}
+
 // THE TOP-LEVEL OUTPUT SHAPE — this comment is the single definition of the
 // JSON object main() prints (both the early-return, no-reviewable-files case
 // and the full path emit the same fields). SKILL.md and output-format.md point
@@ -605,9 +603,20 @@ export function buildLenses(reviewable, filesContent, lensDefs) {
 //   renamed         { newPath: oldPath } for renamed files.
 //   generated       Paths excluded as generated — the union of linguist/gitlab
 //                   attributes and the built-in list (see markGenerated).
-//   verify          detectVerifyCommands()'s result — see its own comment.
-//   disabledLenses  Base lens names this repo's own REVIEW.yaml
-//                   `disableDefaultLenses:` actually turned off — resolved
+//   verify          detectVerifyCommands()'s result, minus its `notices` key
+//                   (folded into configNotices below instead) — see its own
+//                   comment for the rest of the shape.
+//   configNotices   Every notice parseConfig produced while reading this
+//                   repo's REVIEW.json (via loadCustomInstructions,
+//                   loadDisabledLenses and detectVerifyCommands) and the
+//                   bundled default.json (via loadDefaultLenses), merged and
+//                   deduplicated by `{ path, reason }` — the same REVIEW.json
+//                   gets parsed by three independent readers, so without
+//                   dedup the same notice could appear up to three times.
+//                   `[]` when nothing was dropped or invalid. See parseConfig's
+//                   own comment for what `path` and `reason` mean.
+//   disabledLenses  Base lens names this repo's own REVIEW.json
+//                   `disableDefaultLenses` actually turned off — resolved
 //                   against the real base-lens list, not merely echoing what
 //                   the file requested, so a name that matches no base lens
 //                   doesn't falsely claim one was disabled. Exists so a
@@ -621,7 +630,7 @@ export function buildLenses(reviewable, filesContent, lensDefs) {
 //                   "security") while the report would otherwise list that
 //                   name as having run its built-in checklist. Always
 //                   disjoint from disabledLenses: a name already removed by
-//                   `disableDefaultLenses:` can't also collide here.
+//                   `disableDefaultLenses` can't also collide here.
 //   lenses          buildLenses()'s result — see its own comment.
 function main() {
   const argv = process.argv.slice(2)
@@ -687,15 +696,24 @@ function main() {
   const reviewable = allDiffs.filter((f) => f.diff.trim() && !generated.has(f.path))
   // Resolved on every invocation (cheap, idempotent) so the orchestrator's Step 7
   // never has to detect anything itself; `--all` suppresses autodetection.
-  const verify = detectVerifyCommands(repo, { all })
-  // Base lenses (bundled default.yaml) the repo disabled via `disableDefaultLenses:`
+  const { notices: verifyNotices, ...verify } = detectVerifyCommands(repo, { all })
+  // Base lenses (bundled default.json) the repo disabled via `disableDefaultLenses`
   // (case-insensitive). Resolved before the early return below so `disabledLenses`
   // is still reported when nothing is reviewable — the repo disabled the lens
   // either way. Filtered against the real base-lens names (not merely echoing
-  // what REVIEW.yaml requested) so a name that matches no base lens doesn't
+  // what REVIEW.json requested) so a name that matches no base lens doesn't
   // falsely claim one was disabled.
-  const requestedDisabled = new Set(loadDisabledLenses(repo).map((n) => n.toLowerCase()))
-  const allBaseDefs = loadDefaultLenses()
+  const { names: requestedDisabledNames, notices: disabledNotices } = loadDisabledLenses(repo)
+  const requestedDisabled = new Set(requestedDisabledNames.map((n) => n.toLowerCase()))
+  let allBaseDefs, defaultNotices
+  try {
+    const loaded = loadDefaultLenses()
+    allBaseDefs = loaded.lenses
+    defaultNotices = loaded.notices
+  } catch (err) {
+    console.error(`loupe: ${err.message}`)
+    process.exit(1)
+  }
   const disabledLenses = allBaseDefs.filter((d) => requestedDisabled.has(d.name.toLowerCase())).map((d) => d.name)
   // Base lenses that survive disabling, but whose name a custom lens also
   // uses: buildLenses assigns `lenses[def.name]` per def in `lensDefs` order
@@ -709,10 +727,14 @@ function main() {
   // reviewable, and always disjoint from disabledLenses since a disabled base
   // lens is filtered out of `baseDefs` before this compares.
   const baseDefs = allBaseDefs.filter((d) => !requestedDisabled.has(d.name.toLowerCase()))
-  const customDefs = loadCustomInstructions(repo)
+  const { lenses: customDefs, notices: customNotices } = loadCustomInstructions(repo)
   const customNames = new Set(customDefs.map((d) => d.name))
   const shadowedLenses = baseDefs.filter((d) => customNames.has(d.name)).map((d) => d.name)
-  if (!reviewable.length) { console.log(JSON.stringify({ base, mergeBase, mode: committed ? "committed" : "working-tree", all, changedFiles: [], renamed: {}, generated: [...generated], verify, disabledLenses, shadowedLenses, lenses: {} })); return }
+
+  const configNotices = dedupeNotices([...defaultNotices, ...customNotices, ...disabledNotices, ...verifyNotices])
+  for (const n of configNotices) console.error(`loupe: config notice: ${n.reason} at ${n.path || "(root)"}`)
+
+  if (!reviewable.length) { console.log(JSON.stringify({ base, mergeBase, mode: committed ? "committed" : "working-tree", all, changedFiles: [], renamed: {}, generated: [...generated], verify, configNotices, disabledLenses, shadowedLenses, lenses: {} })); return }
 
   const filesContent = {}
   for (const f of reviewable) {
@@ -722,7 +744,7 @@ function main() {
     filesContent[f.oldPath] = content
   }
   const renamed = Object.fromEntries(allDiffs.filter((f) => f.renamed).map((f) => [f.newPath, f.oldPath]))
-  // Then the repo's own REVIEW.yaml — a same-named custom lens overrides its
+  // Then the repo's own REVIEW.json — a same-named custom lens overrides its
   // base counterpart (buildLenses, last wins; see shadowedLenses above).
   const lensDefs = [...baseDefs, ...customDefs]
 
@@ -734,7 +756,7 @@ function main() {
   console.log(JSON.stringify({
     base, mergeBase, mode: committed ? "committed" : "working-tree", all,
     changedFiles: reviewable.map((f) => f.path),
-    renamed, generated: [...generated], verify, disabledLenses, shadowedLenses, lenses,
+    renamed, generated: [...generated], verify, configNotices, disabledLenses, shadowedLenses, lenses,
   }))
 }
 

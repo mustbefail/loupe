@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { parseDiff, fnmatch, matchesInstruction, parseGeneratedAttrs, isBuiltinGenerated, markGenerated, parseMakefileTargets, detectVerifyCommands, parseTopLevelList } from "../skills/loupe/scripts/build-context.mjs"
+import { parseDiff, fnmatch, matchesInstruction, parseGeneratedAttrs, isBuiltinGenerated, markGenerated, parseMakefileTargets, detectVerifyCommands } from "../skills/loupe/scripts/build-context.mjs"
 
 // Minimal fs stand-in keyed by absolute path, so verification detection can be
 // tested without touching a real repo.
@@ -16,8 +16,8 @@ function fakeFs(files) {
 // repetition is by construction rather than by copy — the assertions stay whole-
 // object `deepEqual`s on purpose, since an unexpected extra key must fail. The
 // outcomes that differ per branch stay written out where they are asserted.
-const NOT_DETECTED = { commands: [], source: null, skipped: "not-detected", repoSupplied: false }
-const ALL_MODE = { commands: [], source: null, skipped: "all-mode", repoSupplied: false }
+const NOT_DETECTED = { commands: [], source: null, skipped: "not-detected", repoSupplied: false, notices: [] }
+const ALL_MODE = { commands: [], source: null, skipped: "all-mode", repoSupplied: false, notices: [] }
 
 test("parseDiff extracts added/modified/new/rename/binary records", () => {
   const raw = [
@@ -183,25 +183,28 @@ test("detectVerifyCommands resolves from GNUmakefile when a repo ships more than
   assert.deepEqual(got.commands, ["make test"])
 })
 
-test("detectVerifyCommands lets an explicit REVIEW.yaml verify list win over autodetection", () => {
+test("detectVerifyCommands lets an explicit REVIEW.json verify list win over autodetection", () => {
   const fs = fakeFs({
-    "/repo/REVIEW.yaml": "verify:\n  - pnpm -F api test\ninstructions:\n  - name: X\n    instructions: y\n",
+    "/repo/REVIEW.json": JSON.stringify({ verify: ["pnpm -F api test"], instructions: [{ name: "X", instructions: "y" }] }),
     "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }),
   })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, fs), { commands: ["pnpm -F api test"], source: "REVIEW.yaml", skipped: null, repoSupplied: true })
+  assert.deepEqual(
+    detectVerifyCommands("/repo", {}, fs),
+    { commands: ["pnpm -F api test"], source: "REVIEW.json", skipped: null, repoSupplied: true, notices: [] },
+  )
 })
 
-test("detectVerifyCommands resolves nothing the repo supplied under --all, including its own verify: list", () => {
-  // --all targets repositories nobody has vetted. A `verify:` entry is handed to
+test("detectVerifyCommands resolves nothing the repo supplied under --all, including its own verify list", () => {
+  // --all targets repositories nobody has vetted. A `verify` entry is handed to
   // a shell on the host, not to a reviewing model the way custom-lens
   // instructions are, so it gets no more trust here than an autodetected script.
   const untrusted = fakeFs({ "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }) })
   assert.deepEqual(detectVerifyCommands("/repo", { all: true }, untrusted), ALL_MODE)
-  const withReviewYaml = fakeFs({
-    "/repo/REVIEW.yaml": "verify:\n  - npm test\n",
+  const withReviewJson = fakeFs({
+    "/repo/REVIEW.json": JSON.stringify({ verify: ["npm test"] }),
     "/repo/package.json": JSON.stringify({ scripts: { lint: "eslint ." } }),
   })
-  assert.deepEqual(detectVerifyCommands("/repo", { all: true }, withReviewYaml), ALL_MODE)
+  assert.deepEqual(detectVerifyCommands("/repo", { all: true }, withReviewJson), ALL_MODE)
 })
 
 test("detectVerifyCommands marks every resolved command list as repo-supplied", () => {
@@ -212,12 +215,12 @@ test("detectVerifyCommands marks every resolved command list as repo-supplied", 
   assert.equal(detectVerifyCommands("/repo", {}, pkg).repoSupplied, true)
   const mk = fakeFs({ "/repo/Makefile": "test:\n\tnode --test\n" })
   assert.equal(detectVerifyCommands("/repo", {}, mk).repoSupplied, true)
-  const review = fakeFs({ "/repo/REVIEW.yaml": "verify:\n  - npm test\n" })
+  const review = fakeFs({ "/repo/REVIEW.json": JSON.stringify({ verify: ["npm test"] }) })
   assert.equal(detectVerifyCommands("/repo", {}, review).repoSupplied, true)
   // A deliberate `verify: []` opt-out is still repo *provenance*, so the flag
   // stays true even though the list is empty — the gate tests both, and only
   // asks when there is something to run.
-  assert.equal(detectVerifyCommands("/repo", {}, fakeFs({ "/repo/REVIEW.yaml": "verify: []\n" })).repoSupplied, true)
+  assert.equal(detectVerifyCommands("/repo", {}, fakeFs({ "/repo/REVIEW.json": JSON.stringify({ verify: [] }) })).repoSupplied, true)
   // A no-match resolved nothing off disk at all, so there is no provenance.
   assert.equal(detectVerifyCommands("/repo", {}, fakeFs({})).repoSupplied, false)
 })
@@ -231,11 +234,11 @@ test("detectVerifyCommands returns exactly the documented key set on every branc
   // the consent gate then prints as fact; and `makefile` must be absent on the
   // package.json branch, where there is no resolved makefile to name.
   const keys = (r) => Object.keys(r).sort()
-  const base = ["commands", "repoSupplied", "skipped", "source"]
+  const base = ["commands", "notices", "repoSupplied", "skipped", "source"]
   const pkgFs = fakeFs({ "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }) })
   assert.deepEqual(keys(detectVerifyCommands("/repo", { all: true }, pkgFs)), base)
   assert.deepEqual(keys(detectVerifyCommands("/repo", {}, fakeFs({}))), base)
-  assert.deepEqual(keys(detectVerifyCommands("/repo", {}, fakeFs({ "/repo/REVIEW.yaml": "verify:\n  - npm test\n" }))), base)
+  assert.deepEqual(keys(detectVerifyCommands("/repo", {}, fakeFs({ "/repo/REVIEW.json": JSON.stringify({ verify: ["npm test"] }) }))), base)
   assert.deepEqual(keys(detectVerifyCommands("/repo", {}, pkgFs)), ["bodies", ...base].sort())
   assert.deepEqual(keys(detectVerifyCommands("/repo", {}, fakeFs({ "/repo/Makefile": "test:\n\tnode --test\n" }))), ["makefile", ...base].sort())
 })
@@ -249,100 +252,77 @@ test("detectVerifyCommands returns nothing for a repo with no recognizable comma
 test("detectVerifyCommands keeps provenance and skip-reason independent", () => {
   // `source` answers "where did this come from", `skipped` answers "why is there
   // nothing to run". An opt-out has both: a real provenance and a reason.
-  const optedOut = detectVerifyCommands("/repo", {}, fakeFs({ "/repo/REVIEW.yaml": "verify: []\n" }))
-  assert.equal(optedOut.source, "REVIEW.yaml")
+  const optedOut = detectVerifyCommands("/repo", {}, fakeFs({ "/repo/REVIEW.json": JSON.stringify({ verify: [] }) }))
+  assert.equal(optedOut.source, "REVIEW.json")
   assert.equal(optedOut.skipped, "opted-out")
   const resolved = detectVerifyCommands("/repo", {}, fakeFs({ "/repo/Makefile": "test:\n\tnode --test\n" }))
   assert.equal(resolved.source, "Makefile")
   assert.equal(resolved.skipped, null) // something to run, so no reason to give
-  const allMode = detectVerifyCommands("/repo", { all: true }, fakeFs({ "/repo/REVIEW.yaml": "verify:\n  - npm test\n" }))
+  const allMode = detectVerifyCommands("/repo", { all: true }, fakeFs({ "/repo/REVIEW.json": JSON.stringify({ verify: ["npm test"] }) }))
   assert.equal(allMode.source, null) // nothing was resolved, so there is no provenance
   assert.equal(allMode.skipped, "all-mode")
 })
 
-test("detectVerifyCommands treats an empty verify: key as opting out, not as absent", () => {
+test("detectVerifyCommands treats an empty verify key as opting out, not as absent", () => {
   // `verify: []` means "do not verify". Falling through to autodetection here
   // would run the very commands the repo declined.
   const optedOut = fakeFs({
-    "/repo/REVIEW.yaml": "verify: []\n",
+    "/repo/REVIEW.json": JSON.stringify({ verify: [] }),
     "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }),
   })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, optedOut), { commands: [], source: "REVIEW.yaml", skipped: "opted-out", repoSupplied: true })
+  assert.deepEqual(
+    detectVerifyCommands("/repo", {}, optedOut),
+    { commands: [], source: "REVIEW.json", skipped: "opted-out", repoSupplied: true, notices: [] },
+  )
 
-  // A REVIEW.yaml with no verify: key at all still autodetects.
+  // A REVIEW.json with no verify key at all still autodetects.
   const noKey = fakeFs({
-    "/repo/REVIEW.yaml": "disableDefaultLenses:\n  - performance\n",
+    "/repo/REVIEW.json": JSON.stringify({ disableDefaultLenses: ["performance"] }),
     "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }),
   })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, noKey), { commands: ["npm run test"], bodies: { test: "node --test" }, source: "package.json", skipped: null, repoSupplied: true })
+  assert.deepEqual(
+    detectVerifyCommands("/repo", {}, noKey),
+    { commands: ["npm run test"], bodies: { test: "node --test" }, source: "package.json", skipped: null, repoSupplied: true, notices: [] },
+  )
 })
 
-test("detectVerifyCommands resolves the single-command shorthand `verify: npm test`, not an opt-out", () => {
-  // Before, only the block sequence and inline `[a, b]` forms counted as a
-  // list, while a separate key-presence check saw the key regardless — so a
-  // bare scalar came back as `skipped: "opted-out"`, reporting that the repo
-  // asked for no verification, the opposite of what it wrote. The two checks
-  // are one function now; see `parseTopLevelList`'s comment for why.
-  const fs = fakeFs({ "/repo/REVIEW.yaml": "verify: npm test\ninstructions:\n  - name: X\n    instructions: y\n" })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, fs), { commands: ["npm test"], source: "REVIEW.yaml", skipped: null, repoSupplied: true })
-})
+test("detectVerifyCommands does not resolve a type-invalid verify (e.g. `verify: 5`) to opted-out", () => {
+  // A type error is not a decision to skip verification. parseConfig's
+  // `{ items, present }` shape for `verify: 5` is identical to `verify: []`
+  // (both `{ [], true }`), so this can only be told apart via `notices` — a
+  // type-invalid verify falls through to autodetection instead, same as if
+  // the key were absent, while the problem itself still surfaces via notices.
+  const fs = fakeFs({ "/repo/REVIEW.json": JSON.stringify({ verify: 5 }) })
+  const got = detectVerifyCommands("/repo", {}, fs)
+  assert.equal(got.skipped, "not-detected")
+  assert.equal(got.source, null)
+  assert.deepEqual(got.notices, [{ path: "verify", reason: "verify-type-invalid" }])
 
-test("detectVerifyCommands reads a verify: list written at zero indent", () => {
-  const fs = fakeFs({
-    "/repo/REVIEW.yaml": "verify:\n- pnpm -F api test\n- make lint\ninstructions:\n  - name: X\n    instructions: y\n",
+  // With an autodetectable package.json script present, autodetection still
+  // runs rather than being suppressed by the invalid verify key.
+  const withPkg = fakeFs({
+    "/repo/REVIEW.json": JSON.stringify({ verify: 5 }),
     "/repo/package.json": JSON.stringify({ scripts: { test: "node --test" } }),
   })
-  assert.deepEqual(detectVerifyCommands("/repo", {}, fs), { commands: ["pnpm -F api test", "make lint"], source: "REVIEW.yaml", skipped: null, repoSupplied: true })
+  const got2 = detectVerifyCommands("/repo", {}, withPkg)
+  assert.equal(got2.source, "package.json")
+  assert.deepEqual(got2.commands, ["npm run test"])
+  assert.deepEqual(got2.notices, [{ path: "verify", reason: "verify-type-invalid" }])
 })
 
-test("parseTopLevelList recognizes a block-scalar header even with a trailing inline comment", () => {
-  // The `#` is only stripped by clean(); testing the raw capture let this
-  // header slip past the block-scalar guard and resolve to a literal `|`
-  // reported as a real (and non-empty) command.
-  assert.deepEqual(parseTopLevelList("verify: | # our verification commands\n  npm test\n", "verify"), { items: [], present: true })
-})
-
-test("parseTopLevelList recognizes both chomping/indentation orders of a block-scalar header", () => {
-  // YAML permits the indicator and the chomping/indentation suffix in either
-  // order: `|-2` (chomping then indent) and `|2-` (indent then chomping) are
-  // both valid, and the guard must reject both, not just one.
-  assert.deepEqual(parseTopLevelList("verify: |2-\n  npm test\n", "verify"), { items: [], present: true })
-  assert.deepEqual(parseTopLevelList("verify: |-2\n  npm test\n", "verify"), { items: [], present: true })
-})
-
-test("parseTopLevelList strips a trailing inline comment before testing the inline-list form", () => {
-  // Before the fix, the three form-matchers ran against the raw line and
-  // stripInlineComment only ran later, inside clean(), on an already-captured
-  // value — so a comment on the header line defeated the inline-list matcher
-  // and the line fell through to the scalar matcher as one bogus item: a
-  // documented opt-out (`verify: []`) came back as an opt-in whose single
-  // command was the literal string "[]".
+test("detectVerifyCommands resolves the single-command shorthand `verify: \"npm test\"`, not an opt-out", () => {
+  const fs = fakeFs({ "/repo/REVIEW.json": JSON.stringify({ verify: "npm test", instructions: [{ name: "X", instructions: "y" }] }) })
   assert.deepEqual(
-    parseTopLevelList("verify: [] # verification disabled on purpose", "verify"),
-    { items: [], present: true },
+    detectVerifyCommands("/repo", {}, fs),
+    { commands: ["npm test"], source: "REVIEW.json", skipped: null, repoSupplied: true, notices: [] },
   )
 })
 
-test("parseTopLevelList strips a trailing inline comment from a multi-item inline list", () => {
-  assert.deepEqual(
-    parseTopLevelList("verify: [npm test, npm run lint] # keep it cheap", "verify"),
-    { items: ["npm test", "npm run lint"], present: true },
-  )
-})
-
-test("parseTopLevelList strips a trailing inline comment from a bare block header", () => {
-  // `verify: # comment` used to fall through to the scalar matcher and
-  // resolve to the bogus item ["# comment"] instead of the empty block list
-  // its author intended.
-  assert.deepEqual(parseTopLevelList("verify: # comment\n", "verify"), { items: [], present: true })
-})
-
-test("parseTopLevelList strips a trailing inline comment so disableDefaultLenses isn't silently dropped", () => {
-  // `disableDefaultLenses: [devops] # noisy` used to resolve to the bogus
-  // item ["[devops]"] — matching no base-lens name, so the repo's disable
-  // request was silently ignored while nothing disclosed that.
-  assert.deepEqual(
-    parseTopLevelList("disableDefaultLenses: [devops] # noisy", "disableDefaultLenses"),
-    { items: ["devops"], present: true },
-  )
+test("detectVerifyCommands reports yaml-unsupported when the repo has a leftover REVIEW.yaml and no REVIEW.json", () => {
+  const fs = fakeFs({ "/repo/REVIEW.yaml": "verify:\n  - npm test\n" })
+  const got = detectVerifyCommands("/repo", {}, fs)
+  assert.deepEqual(got.notices, [{ path: "REVIEW.yaml", reason: "yaml-unsupported" }])
+  // The leftover file is never read for commands — autodetection proceeds as
+  // if there were no repo-supplied verify list at all.
+  assert.equal(got.skipped, "not-detected")
 })

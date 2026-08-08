@@ -1,0 +1,28 @@
+{
+  "disableDefaultLenses": ["performance"],
+
+  "verify": ["npm run typecheck", "npm run lint", "npm test"],
+
+  "instructions": [
+    {
+      "name": "House Style",
+      "instructions": "Enforce our conventions:\n- Public functions and exported types must have a doc comment.\n- Prefer early returns over deeply nested conditionals.\n- No TODO/FIXME left without a linked ticket id."
+    },
+    {
+      "name": "TypeScript Quality",
+      "fileFilters": ["**/*.ts", "!**/*.test.ts", "!**/*.d.ts"],
+      "instructions": "- No `any` to silence the compiler — prefer `unknown` + narrowing.\n- Explicit return types on exported functions.\n- No non-null `!` assertions that paper over a possibly-undefined value."
+    },
+    {
+      "name": "Payments Safety",
+      "agent": "security-reviewer",
+      "fileFilters": ["**/payments/**", "**/billing/**"],
+      "instructions": "- Never log full card numbers, CVV, or raw payment tokens.\n- All money math uses integer minor units (cents), never floats.\n- Idempotency keys are required on every charge/refund call."
+    },
+    {
+      "name": "Node Performance",
+      "fileFilters": ["**/*.ts"],
+      "instructions": "Node hot paths: flag `await` inside a loop over independent work (use `Promise.all`), synchronous `fs`/`crypto` on a request path, and N+1 access patterns (batch or `include` in the ORM instead of per-row queries)."
+    }
+  ]
+}

@@ -1,190 +1,127 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { parseInstructionsYaml, loadCustomInstructions, loadDefaultLenses, parseDisabledLenses, loadDisabledLenses, parseVerifyCommands, parseTopLevelList } from "../skills/loupe/scripts/build-context.mjs"
+import { parseConfig, normalizeList, loadCustomInstructions, loadDefaultLenses, loadDisabledLenses } from "../skills/loupe/scripts/build-context.mjs"
 
-const YAML = `---
-# comment line
-instructions:
-  - name: General Standards
-    fileFilters:
-      - "**/*"
-      - "!spec/**/*"
-    instructions: |
-      1. Use inclusive language.
-      2. Verify CE/EE separation.
-  - name: Ruby Quality
-    fileFilters:
-      - "**/*.rb"
-    instructions: |
-      Check for N+1 queries.
-`
-
-test("parseInstructionsYaml parses names, filters and block scalars", () => {
-  const items = parseInstructionsYaml(YAML)
-  assert.equal(items.length, 2)
-  assert.equal(items[0].name, "General Standards")
-  assert.deepEqual(items[0].fileFilters, ["**/*", "!spec/**/*"])
-  assert.ok(items[0].instructions.includes("inclusive language"))
-  assert.ok(items[0].instructions.includes("CE/EE separation"))
-  assert.equal(items[1].name, "Ruby Quality")
-  assert.deepEqual(items[1].fileFilters, ["**/*.rb"])
-  assert.ok(items[1].instructions.trim().startsWith("Check for N+1"))
+test("parseConfig reports parse-error for malformed JSON and for an empty file", () => {
+  assert.deepEqual(parseConfig("{ not json").notices, [{ path: "", reason: "parse-error" }])
+  assert.deepEqual(parseConfig("").notices, [{ path: "", reason: "parse-error" }])
 })
 
-test("parseInstructionsYaml drops incomplete items", () => {
-  const items = parseInstructionsYaml("instructions:\n  - name: Only Name\n")
-  assert.equal(items.length, 0)
-})
-
-test("parseInstructionsYaml parses optional agent/reference and allows a lens with no fileFilters", () => {
-  const y = `instructions:
-  - name: DevOps
-    agent: general-purpose
-    reference: review-lenses.md#devops
-    instructions: |
-      Check infra config.
-`
-  const items = parseInstructionsYaml(y)
-  assert.equal(items.length, 1)
-  assert.equal(items[0].agent, "general-purpose")
-  assert.equal(items[0].reference, "review-lenses.md#devops")
-  assert.deepEqual(items[0].fileFilters, []) // no fileFilters is now allowed (= all files)
-  assert.ok(items[0].instructions.includes("Check infra config."))
-})
-
-test("parseDisabledLenses reads block and inline forms and ignores unrelated YAML", () => {
-  const block = `disableDefaultLenses:
-  - devops
-  - performance
-instructions:
-  - name: X
-    instructions: |
-      y
-`
-  assert.deepEqual(parseDisabledLenses(block), ["devops", "performance"])
-  assert.deepEqual(parseDisabledLenses("disableDefaultLenses: [devops, security]\n"), ["devops", "security"])
-  assert.deepEqual(parseDisabledLenses("instructions:\n  - name: X\n    instructions: y\n"), [])
-})
-
-test("parseVerifyCommands reads block and inline forms and keeps commands verbatim", () => {
-  const block = `verify:
-  - npm run typecheck
-  - npx tsc --noEmit -p tsconfig.build.json
-instructions:
-  - name: X
-    instructions: |
-      y
-`
-  assert.deepEqual(parseVerifyCommands(block), ["npm run typecheck", "npx tsc --noEmit -p tsconfig.build.json"])
-  assert.deepEqual(parseVerifyCommands('verify: ["npm test", make lint]\n'), ["npm test", "make lint"])
-  assert.deepEqual(parseVerifyCommands("disableDefaultLenses:\n  - performance\n"), [])
-})
-
-test("parseTopLevelList accepts block items at zero indent and stops at the next key", () => {
-  const yaml = `verify:
-- npm test
-- make lint
-disableDefaultLenses:
-- performance
-`
-  assert.deepEqual(parseVerifyCommands(yaml), ["npm test", "make lint"])
-  assert.deepEqual(parseDisabledLenses(yaml), ["performance"])
-})
-
-test("parseTopLevelList treats a document separator as the end of the list, not an item", () => {
-  // `---` satisfies the zero-indent item regex (dash, then `--`), so without an
-  // explicit guard an empty `verify:` followed by a separator yields the command
-  // `--`, which Step 7 would then try to run.
-  assert.deepEqual(parseVerifyCommands("verify:\n---\ninstructions:\n  - name: X\n    instructions: y\n"), [])
-  assert.deepEqual(parseDisabledLenses("disableDefaultLenses:\n---\n"), [])
-  assert.deepEqual(parseVerifyCommands("verify:\n- npm test\n---\n- not an item\n"), ["npm test"])
-})
-
-test("parseVerifyCommands and parseDisabledLenses do not bleed into each other", () => {
-  const yaml = `disableDefaultLenses:
-  - performance
-verify:
-  - npm test
-`
-  assert.deepEqual(parseDisabledLenses(yaml), ["performance"])
-  assert.deepEqual(parseVerifyCommands(yaml), ["npm test"])
-})
-
-test("parseVerifyCommands and parseDisabledLenses resolve a bare scalar to a one-item list", () => {
-  // `verify: npm test` is unambiguous shorthand for a single command. Before,
-  // only the block sequence and inline `[a, b]` forms were recognized as a
-  // list at all, so this scalar resolved to zero items and was reported as
-  // the repo opting out of verification entirely — the opposite of intent.
-  assert.deepEqual(parseVerifyCommands("verify: npm test\ninstructions:\n  - name: X\n    instructions: y\n"), ["npm test"])
-  assert.deepEqual(parseDisabledLenses("disableDefaultLenses: performance\n"), ["performance"])
-  // Quotes and a trailing inline comment are stripped, same as the block-item
-  // and inline-list forms.
-  assert.deepEqual(parseVerifyCommands('verify: "npm test" # run unit tests\n'), ["npm test"])
-})
-
-test("parseTopLevelList reports key presence independently of how many items it resolved", () => {
-  // `present` is what lets a caller tell a deliberate `verify: []` (opt-out)
-  // from the key being absent (autodetect) — list length alone can't.
-  assert.deepEqual(parseTopLevelList("verify: []\n", "verify"), { items: [], present: true })
-  assert.deepEqual(parseTopLevelList("disableDefaultLenses:\n  - performance\n", "verify"), { items: [], present: false })
-})
-
-test("parseTopLevelList treats a bare block-scalar indicator as present but yields no items", () => {
-  // `verify: |` / `verify: >` are YAML block-scalar sigils this targeted parser
-  // does not follow onto their indented lines (unlike `parseInstructionsYaml`'s
-  // `instructions: |`); taking the sigil itself as a one-item command would
-  // silently hand a shell the literal `|`.
-  assert.deepEqual(parseTopLevelList("verify: |\n  npm test\n", "verify"), { items: [], present: true })
-  assert.deepEqual(parseTopLevelList("verify: >\n  npm test\n", "verify"), { items: [], present: true })
-})
-
-test("parseTopLevelList rejects a block-scalar indicator in every item form, not just the bare scalar", () => {
-  // The guard was first written into the bare-scalar branch alone, so an
-  // indicator arriving as an inline-list element or a sequence item still became
-  // a command — a shell handed the literal `|`. It now sits where items are
-  // added, so no form can reach around it.
-  assert.deepEqual(parseTopLevelList("verify: [|, npm test]\n", "verify"), { items: ["npm test"], present: true })
-  assert.deepEqual(parseTopLevelList("verify: [>, npm test]\n", "verify"), { items: ["npm test"], present: true })
-  assert.deepEqual(parseTopLevelList("verify:\n  - |\n    npm test\n", "verify"), { items: [], present: true })
-  assert.deepEqual(parseTopLevelList("verify:\n  - >-\n  - npm test\n", "verify"), { items: ["npm test"], present: true })
-  // The bare-scalar form the guard originally covered still works.
-  assert.deepEqual(parseTopLevelList("verify: |2-\n  npm test\n", "verify"), { items: [], present: true })
-})
-
-test("parseTopLevelList splits an inline list only on commas outside quotes", () => {
-  // A verify command carries its own commas often enough to matter, and splitting
-  // on every one of them tore a single command into fragments that `clean()` then
-  // unquoted into separately runnable strings — half a command, plus a stray tail
-  // the gate would show and a shell would try to execute.
+test("parseConfig reports shape-invalid for a top-level array, and for instructions present but not an array", () => {
+  assert.deepEqual(parseConfig("[]").notices, [{ path: "", reason: "shape-invalid" }])
   assert.deepEqual(
-    parseTopLevelList('verify: ["nyc --reporter=text,lcov npm test", npm run lint]\n', "verify"),
-    { items: ["nyc --reporter=text,lcov npm test", "npm run lint"], present: true },
+    parseConfig(JSON.stringify({ instructions: "not an array" })).notices,
+    [{ path: "instructions", reason: "shape-invalid" }],
+  )
+})
+
+test("parseConfig emits no notice when instructions is simply absent", () => {
+  const r = parseConfig(JSON.stringify({ verify: ["npm test"] }))
+  assert.deepEqual(r.config.instructions, [])
+  assert.deepEqual(r.notices, [])
+})
+
+test("a config with only verify, or only disableDefaultLenses, is legal on its own", () => {
+  // The three loaders read their keys independently — none of them requires
+  // `instructions` to be present.
+  assert.deepEqual(parseConfig(JSON.stringify({ verify: ["npm test"] })).notices, [])
+  assert.deepEqual(parseConfig(JSON.stringify({ disableDefaultLenses: ["performance"] })).notices, [])
+})
+
+test("parseConfig drops an instructions element missing name or instructions, and checks the type before calling .trim()", () => {
+  const onlyName = parseConfig(JSON.stringify({ instructions: [{ name: "Only Name" }] }))
+  assert.deepEqual(onlyName.config.instructions, [])
+  assert.deepEqual(onlyName.notices, [{ path: "instructions[0]", reason: "item-dropped" }])
+
+  // A number here would throw calling .trim() on it if the type weren't
+  // checked first — it must be dropped, not crash the loader.
+  const wrongType = parseConfig(JSON.stringify({ instructions: [{ name: "X", instructions: 5 }] }))
+  assert.deepEqual(wrongType.config.instructions, [])
+  assert.deepEqual(wrongType.notices, [{ path: "instructions[0]", reason: "item-dropped" }])
+})
+
+test("parseConfig drops a non-string fileFilters element and keeps the rest", () => {
+  const r = parseConfig(JSON.stringify({
+    instructions: [{ name: "Ruby Quality", instructions: "Check for N+1 queries.", fileFilters: [1, "**/*.rb", "!spec/**/*"] }],
+  }))
+  assert.deepEqual(r.config.instructions[0].fileFilters, ["**/*.rb", "!spec/**/*"])
+  assert.deepEqual(r.notices, [{ path: "instructions[0].fileFilters[0]", reason: "item-dropped" }])
+})
+
+test("parseConfig parses optional agent/reference and allows a lens with no fileFilters", () => {
+  const r = parseConfig(JSON.stringify({
+    instructions: [{ name: "DevOps", agent: "general-purpose", reference: "review-lenses.md#devops", instructions: "Check infra config." }],
+  }))
+  assert.equal(r.config.instructions.length, 1)
+  assert.equal(r.config.instructions[0].agent, "general-purpose")
+  assert.equal(r.config.instructions[0].reference, "review-lenses.md#devops")
+  assert.deepEqual(r.config.instructions[0].fileFilters, []) // no fileFilters is allowed (= all files)
+  assert.deepEqual(r.notices, [])
+})
+
+test("parseConfig resolves verify per the documented table", () => {
+  const resolve = (verify) => parseConfig(JSON.stringify(verify === undefined ? {} : { verify }))
+
+  assert.deepEqual(resolve(undefined).config.verify, { items: [], present: false })
+  assert.deepEqual(resolve(undefined).notices, [])
+
+  assert.deepEqual(resolve([]).config.verify, { items: [], present: true })
+  assert.deepEqual(resolve([]).notices, [])
+
+  assert.deepEqual(resolve(null).config.verify, { items: [], present: true })
+  assert.deepEqual(resolve(null).notices, [])
+
+  assert.deepEqual(resolve("npm test").config.verify, { items: ["npm test"], present: true })
+  assert.deepEqual(resolve("npm test").notices, [])
+
+  assert.deepEqual(resolve(["a", "b"]).config.verify, { items: ["a", "b"], present: true })
+  assert.deepEqual(resolve(["a", "b"]).notices, [])
+
+  const dropped = resolve([1, "a"])
+  assert.deepEqual(dropped.config.verify, { items: ["a"], present: true })
+  assert.deepEqual(dropped.notices, [{ path: "verify[0]", reason: "item-dropped" }])
+
+  // `5` must not resolve to an opt-out: that would report the repo as having
+  // declined verification when it actually made a type error.
+  const typeInvalid = resolve(5)
+  assert.deepEqual(typeInvalid.config.verify, { items: [], present: true })
+  assert.deepEqual(typeInvalid.notices, [{ path: "verify", reason: "verify-type-invalid" }])
+
+  assert.deepEqual(resolve(["  "]).config.verify, { items: [], present: true })
+  assert.deepEqual(resolve(["  "]).notices, [])
+})
+
+test("parseConfig normalizes disableDefaultLenses from a bare string or an array, independent of verify", () => {
+  assert.deepEqual(parseConfig(JSON.stringify({ disableDefaultLenses: "performance" })).config.disableDefaultLenses, ["performance"])
+  const r = parseConfig(JSON.stringify({ disableDefaultLenses: ["performance"], verify: ["npm test"] }))
+  assert.deepEqual(r.config.disableDefaultLenses, ["performance"])
+  assert.deepEqual(r.config.verify, { items: ["npm test"], present: true })
+  assert.deepEqual(r.notices, [])
+})
+
+test("normalizeList: null/absent, string, array-with-drops, and a wholly wrong type", () => {
+  assert.deepEqual(normalizeList(null), { items: [], notices: [] })
+  assert.deepEqual(normalizeList(undefined), { items: [], notices: [] })
+  assert.deepEqual(normalizeList("a"), { items: ["a"], notices: [] })
+  assert.deepEqual(normalizeList("  "), { items: [], notices: [] })
+  assert.deepEqual(normalizeList(["a", 1, "b"]), { items: ["a", "b"], notices: [{ path: "[1]", reason: "item-dropped" }] })
+  assert.deepEqual(normalizeList(5), { items: [], notices: [] })
+})
+
+test("loadDisabledLenses reads the disable list from REVIEW.json", () => {
+  const json = JSON.stringify({ disableDefaultLenses: ["performance"], instructions: [{ name: "X", instructions: "y" }] })
+  assert.deepEqual(
+    loadDisabledLenses("/repo", { existsSync: (p) => p.endsWith("REVIEW.json"), readFileSync: () => json }),
+    { names: ["performance"], notices: [] },
   )
   assert.deepEqual(
-    parseTopLevelList(`verify: ['npm test -- --grep "parse,dedup"', make lint]\n`, "verify"),
-    { items: ['npm test -- --grep "parse,dedup"', "make lint"], present: true },
+    loadDisabledLenses("/repo", { existsSync: () => false, readFileSync: () => { throw new Error("no") } }),
+    { names: [], notices: [] },
   )
-  // Unquoted commas still separate — a plain scalar cannot contain one in YAML's
-  // flow context, so this is the form the old behaviour got right.
-  assert.deepEqual(parseTopLevelList("verify: [npm test, npm run lint]\n", "verify"), {
-    items: ["npm test", "npm run lint"],
-    present: true,
-  })
-  // An unterminated quote yields one item that won't run, not several that will.
-  assert.deepEqual(parseTopLevelList('verify: ["npm test, npm run lint]\n', "verify"), {
-    items: ['"npm test, npm run lint'],
-    present: true,
-  })
-})
-
-test("loadDisabledLenses reads the disable list from REVIEW.yaml", () => {
-  const yaml = "disableDefaultLenses:\n  - performance\ninstructions:\n  - name: X\n    instructions: y\n"
-  assert.deepEqual(loadDisabledLenses("/repo", { existsSync: () => true, readFileSync: () => yaml }), ["performance"])
-  assert.deepEqual(loadDisabledLenses("/repo", { existsSync: () => false, readFileSync: () => { throw new Error("no") } }), [])
 })
 
 test("loadDefaultLenses loads the bundled base lenses with data-driven routing", () => {
-  const defs = loadDefaultLenses()
+  const { lenses: defs } = loadDefaultLenses()
   const names = defs.map((d) => d.name)
   for (const n of ["correctness", "security", "performance", "devops", "maintainability"]) assert.ok(names.includes(n), `missing ${n}`)
   assert.ok(defs.every((d) => d.type === "base"))
@@ -197,13 +134,22 @@ test("loadDefaultLenses loads the bundled base lenses with data-driven routing",
   assert.equal(maintainability.include_patterns.length, 0) // all-files
 })
 
+test("loadDefaultLenses yields exactly 5 lenses from the bundled default.json", () => {
+  assert.equal(loadDefaultLenses().lenses.length, 5)
+})
+
+test("loadDefaultLenses throws when the bundled config is missing or fails to parse", () => {
+  assert.throws(() => loadDefaultLenses({ existsSync: () => false, readFileSync: () => { throw new Error("should not be called") } }))
+  assert.throws(() => loadDefaultLenses({ existsSync: () => true, readFileSync: () => "{" }))
+})
+
 test("every base lens carries a reference and instructions that point at its own section", () => {
-  // The prose moved out of the rules file and into references/review-lenses.md,
-  // so a lens now delivers its checklist by naming the section rather than
-  // restating it. That makes both halves load-bearing: an empty `instructions`
-  // or one naming the wrong section leaves the reviewer with no checklist at
-  // all, and nothing else in the loop would notice.
-  for (const d of loadDefaultLenses()) {
+  // The prose lives in references/review-lenses.md, so a lens delivers its
+  // checklist by naming the section rather than restating it. That makes both
+  // halves load-bearing: an empty `instructions` or one naming the wrong
+  // section leaves the reviewer with no checklist at all, and nothing else in
+  // the loop would notice.
+  for (const d of loadDefaultLenses().lenses) {
     assert.ok(d.instructions.trim().length > 0, `${d.name}: empty instructions`)
     assert.ok(d.reference, `${d.name}: missing reference`)
     assert.equal(d.reference, `review-lenses.md#${d.name}`)
@@ -219,60 +165,28 @@ test("the maintainability lens keeps its severity ceiling in the rules file", ()
   // leans on, and nothing in the code enforces it — Step 8 does not clamp. It
   // has to survive in the text the reviewer is actually handed, so pin it here
   // rather than trusting that a prose edit will remember it.
-  const m = loadDefaultLenses().find((d) => d.name === "maintainability").instructions
+  const m = loadDefaultLenses().lenses.find((d) => d.name === "maintainability").instructions
   assert.match(m, /cap severity at medium/i)
   assert.match(m, /never report blocker or high/i)
   assert.doesNotMatch(m, /report (blocker|high) (when|if|for)/i)
 })
 
-const COMMENT_YAML = `instructions:
-  - name: General Standards # top-level
-    fileFilters:
-      - "**/*.rb" # ruby only
-    instructions: Quick check. # note
-`
-
-test("parseInstructionsYaml strips inline # comments from name, fileFilters entry, and inline instructions", () => {
-  const items = parseInstructionsYaml(COMMENT_YAML)
-  assert.equal(items.length, 1)
-  assert.equal(items[0].name, "General Standards")
-  assert.deepEqual(items[0].fileFilters, ["**/*.rb"])
-  assert.equal(items[0].instructions, "Quick check.")
-})
-
-const UNEVEN_INDENT_YAML = `instructions:
-  - name: Uneven Block
-    fileFilters:
-      - "**/*"
-    instructions: |
-        - deeper first bullet
-      - shallower second bullet
-`
-
-test("parseInstructionsYaml keeps both lines of an unevenly indented block scalar in a single item", () => {
-  const items = parseInstructionsYaml(UNEVEN_INDENT_YAML)
-  assert.equal(items.length, 1)
-  assert.ok(items[0].instructions.includes("deeper first bullet"))
-  assert.ok(items[0].instructions.includes("shallower second bullet"))
-})
-
-test("loadCustomInstructions returns [] when the instructions file does not exist", () => {
+test("loadCustomInstructions returns [] lenses and no notices when there is no REVIEW.json and no leftover REVIEW.yaml", () => {
   const deps = { existsSync: () => false, readFileSync: () => { throw new Error("should not be called") } }
-  const result = loadCustomInstructions("/repo", deps)
-  assert.deepEqual(result, [])
+  assert.deepEqual(loadCustomInstructions("/repo", deps), { lenses: [], notices: [] })
+})
+
+test("loadCustomInstructions reports yaml-unsupported when the repo has a leftover REVIEW.yaml and no REVIEW.json", () => {
+  const deps = { existsSync: (p) => p.endsWith("REVIEW.yaml"), readFileSync: () => { throw new Error("should not be read") } }
+  assert.deepEqual(loadCustomInstructions("/repo", deps), { lenses: [], notices: [{ path: "REVIEW.yaml", reason: "yaml-unsupported" }] })
 })
 
 test("loadCustomInstructions splits include/exclude patterns and strips the ! prefix", () => {
-  const yaml = `instructions:
-  - name: Ruby Quality
-    fileFilters:
-      - "**/*.rb"
-      - "!spec/**/*"
-    instructions: |
-      Check for N+1 queries.
-`
-  const deps = { existsSync: () => true, readFileSync: () => yaml }
-  const result = loadCustomInstructions("/repo", deps)
+  const json = JSON.stringify({
+    instructions: [{ name: "Ruby Quality", fileFilters: ["**/*.rb", "!spec/**/*"], instructions: "Check for N+1 queries." }],
+  })
+  const deps = { existsSync: (p) => p.endsWith("REVIEW.json"), readFileSync: () => json }
+  const { lenses: result, notices } = loadCustomInstructions("/repo", deps)
   assert.equal(result.length, 1)
   assert.equal(result[0].name, "Ruby Quality")
   assert.ok(result[0].instructions.includes("Check for N+1 queries."))
@@ -280,4 +194,5 @@ test("loadCustomInstructions splits include/exclude patterns and strips the ! pr
   assert.deepEqual(result[0].exclude_patterns, ["spec/**/*"])
   assert.equal(result[0].type, "custom")
   assert.equal(result[0].agent, "code-reviewer") // default agent when none given
+  assert.deepEqual(notices, [])
 })
