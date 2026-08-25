@@ -216,26 +216,96 @@ test("default reviews uncommitted (tracked edits + new files); --committed does 
   })
 })
 
-test("CLI emits configNotices deduplicated across the three independent REVIEW.json readers, on both output paths", () => {
+// The config decides which lenses exist, which built-ins are switched off, and which
+// commands the verify gate runs. Reading it from the tree under review would let a branch
+// rewrite the reviewer that is about to review it, and only `verify` is gated by a prompt.
+test("CLI reads the config from the base revision, so a branch cannot rewrite its own reviewer", () => {
   withTempRepo((repo, g) => {
-    writeFileSync(join(repo, "a.rb"), "puts 1\n"); g("add", "."); g("commit", "-qm", "base")
+    writeFileSync(join(repo, "a.rb"), "puts 1\n")
+    writeFileSync(join(repo, "REVIEW.json"), JSON.stringify({
+      instructions: [{ name: "Base lens", fileFilters: ["*.rb"], instructions: "From the base." }],
+    }))
+    g("add", "."); g("commit", "-qm", "base")
     const initBranch = g("branch", "--show-current").trim()
     g("checkout", "-qb", "feature")
+    // The branch switches a built-in lens off and swaps the custom one out.
+    writeFileSync(join(repo, "REVIEW.json"), JSON.stringify({
+      disableDefaultLenses: ["correctness"],
+      instructions: [{ name: "Branch lens", fileFilters: ["*.rb"], instructions: "From the branch." }],
+    }))
+    writeFileSync(join(repo, "a.rb"), "puts 2\n")
+    g("add", "."); g("commit", "-qam", "change")
+
+    const data = JSON.parse(execFileSync("node", [SCRIPT, "--base", initBranch, "--repo", repo], { encoding: "utf8" }))
+    const keys = Object.keys(data.lenses)
+    assert.ok(keys.includes("correctness"), "a branch must not be able to switch a base lens off")
+    assert.ok(keys.includes("Base lens"), "the base revision's custom lens is the one that runs")
+    assert.ok(!keys.includes("Branch lens"), "the branch's own lens must not run")
+    assert.deepEqual(data.disabledLenses, [])
+    // Reported, not silent: a config change is a thing a human should see.
+    assert.deepEqual(data.configNotices, [{ path: "REVIEW.json", reason: "config-differs-from-base" }])
+  })
+})
+
+test("CLI falls back to the working tree when the base has no config, and reports it", () => {
+  withTempRepo((repo, g) => {
+    writeFileSync(join(repo, "a.rb"), "puts 1\n")
+    g("add", "."); g("commit", "-qm", "base")
+    const initBranch = g("branch", "--show-current").trim()
+    g("checkout", "-qb", "feature")
+    writeFileSync(join(repo, "REVIEW.json"), JSON.stringify({
+      instructions: [{ name: "First adoption", fileFilters: ["*.rb"], instructions: "Newly added." }],
+    }))
+    writeFileSync(join(repo, "a.rb"), "puts 2\n")
+    g("add", "."); g("commit", "-qam", "change")
+
+    const data = JSON.parse(execFileSync("node", [SCRIPT, "--base", initBranch, "--repo", repo], { encoding: "utf8" }))
+    // Refusing here would make the tool do nothing the first time anyone adds a config.
+    assert.ok(Object.keys(data.lenses).includes("First adoption"))
+    assert.deepEqual(data.configNotices, [{ path: "REVIEW.json", reason: "config-absent-from-base" }])
+  })
+})
+
+test("--all reads the config from disk, because there is no base to read it from", () => {
+  withTempRepo((repo, g) => {
+    writeFileSync(join(repo, "a.rb"), "puts 1\n")
+    writeFileSync(join(repo, "REVIEW.json"), JSON.stringify({
+      instructions: [{ name: "Committed lens", fileFilters: ["*.rb"], instructions: "Committed." }],
+    }))
+    g("add", "."); g("commit", "-qm", "base")
+    // Uncommitted, and therefore only visible on disk.
+    writeFileSync(join(repo, "REVIEW.json"), JSON.stringify({
+      instructions: [{ name: "On-disk lens", fileFilters: ["*.rb"], instructions: "On disk only." }],
+    }))
+
+    const data = JSON.parse(execFileSync("node", [SCRIPT, "--all", "--repo", repo], { encoding: "utf8" }))
+    assert.ok(Object.keys(data.lenses).includes("On-disk lens"))
+    assert.ok(!Object.keys(data.lenses).includes("Committed lens"))
+    // No base, so no comparison to report either way.
+    assert.deepEqual(data.configNotices, [])
+  })
+})
+
+test("CLI emits configNotices deduplicated across the three independent REVIEW.json readers, on both output paths", () => {
+  withTempRepo((repo, g) => {
+    writeFileSync(join(repo, "a.rb"), "puts 1\n")
     // A malformed lens element and a type-invalid verify in the same file:
     // loadCustomInstructions, loadDisabledLenses and detectVerifyCommands each
     // parse this file independently (see loadReviewConfig), so without dedup
-    // the same two notices would appear more than once.
+    // the same two notices would appear more than once. It sits in the BASE
+    // commit, which is where a repo's config lives and where it is read from.
     writeFileSync(join(repo, "REVIEW.json"), JSON.stringify({ verify: 5, instructions: [{ name: "X" }] }))
-    g("add", ".")
+    g("add", "."); g("commit", "-qm", "base")
+    const initBranch = g("branch", "--show-current").trim()
+    g("checkout", "-qb", "feature")
     const expected = [
       { path: "instructions[0]", reason: "item-dropped" },
       { path: "verify", reason: "verify-type-invalid" },
     ]
     const byReason = (a, b) => a.reason.localeCompare(b.reason)
 
-    // The early-return, no-reviewable-files path (REVIEW.json is committed but
-    // nothing else has changed against itself).
-    g("commit", "-qam", "add REVIEW.json")
+    // The early-return, no-reviewable-files path: nothing has changed against
+    // the branch itself.
     const noChanges = JSON.parse(execFileSync("node", [SCRIPT, "--base", "feature", "--repo", repo, "--committed"], { encoding: "utf8" }))
     assert.deepEqual(noChanges.changedFiles, [])
     assert.deepEqual([...noChanges.configNotices].sort(byReason), expected)

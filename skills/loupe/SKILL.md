@@ -44,7 +44,7 @@ Parsed from the skill invocation's argument string. All are optional.
 | `--committed` | off (review the working tree) | What to diff against `--base`. By default `loupe` reviews the **working tree** — every change not yet in the base, whether committed on the branch or still uncommitted (tracked edits and new untracked files) — so work-in-progress is reviewed and each pass's re-diff sees the edits Step 6 just made. Pass `--committed` to diff the commit range (`mergeBase..HEAD`) instead, reviewing only what has been committed (a PR/MR-style gate). Passed through to `build-context.mjs --committed`. |
 | `--verify <cmd>` | autodetected (see Step 7) | A shell command that must still pass after a fix pass. **Repeatable** — each occurrence appends one command, so `--verify "npx tsc --noEmit" --verify "npm test"` yields a two-command list that runs in that order, matching the list shape `REVIEW.json`'s `verify:` produces. Given at least once, it **replaces** the whole resolved list. Prefer repeating the flag over an `&&`-chain: a chain is one opaque command, so it loses the per-command baseline match (Step 7 item 2 matches by exact `cmd` string) and the per-command report bullets. Because the human wrote it, it needs no consent prompt (Step 6) and it is the **only** way to enable the gate under `--all`. |
 | `--no-verify` | off (verify when commands are known) | Turn the Step 7 regression gate off entirely: no baseline run, no post-fix run. Use it when the repo's test suite is too slow to run once per iteration, accepting that a fix can then break the build with nothing noticing. |
-| `--all` | off (diff against `--base`) | Review the **entire repository** instead of a diff — for a first look at a codebase with no meaningful base to compare against (e.g. a downloaded skill or a repo someone just handed you). Implemented as a diff against git's empty-tree object, so every tracked file is treated as newly added (`original` is always `null`). Passed through to `build-context.mjs --all`; when given, `--base` is ignored (there's no real base) and Step 2's default-branch detection is skipped. Combine with `--committed` to diff the empty tree only against `HEAD` (skips uncommitted/untracked work). **Trust note:** even under `--all`, `loupe` still reads that repo's on-disk `REVIEW.json` — its custom-lens `instructions` are passed verbatim to the reviewer and judge subagents, and its `disableDefaultLenses` can switch off `loupe`'s own base lenses — so only run `loupe` on repositories whose `REVIEW.json` you trust. `--all` also resolves **no** verification command the repo supplies, so only `--verify` enables the gate here — see the verification safety rule below for why. |
+| `--all` | off (diff against `--base`) | Review the **entire repository** instead of a diff — for a first look at a codebase with no meaningful base to compare against (e.g. a downloaded skill or a repo someone just handed you). Implemented as a diff against git's empty-tree object, so every tracked file is treated as newly added (`original` is always `null`). Passed through to `build-context.mjs --all`; when given, `--base` is ignored (there's no real base) and Step 2's default-branch detection is skipped. Combine with `--committed` to diff the empty tree only against `HEAD` (skips uncommitted/untracked work). **Trust note:** `--all` is the one mode that reads that repo's `REVIEW.json` from **disk**. Everywhere else the config comes from the base revision, precisely so a branch cannot rewrite the reviewer that is about to review it (Step 2); under `--all` there is no base to read from, so that protection does not exist here. Its custom-lens `instructions` are passed verbatim to the reviewer and judge subagents, and its `disableDefaultLenses` can switch off `loupe`'s own base lenses — so only run `--all` on a repository whose `REVIEW.json` you trust. `--all` also resolves **no** verification command the repo supplies, so only `--verify` enables the gate here — see the verification safety rule below for why. |
 
 ## Safety rules (non-negotiable)
 
@@ -184,6 +184,16 @@ Parsed from the skill invocation's argument string. All are optional.
      writes outside the reviewed repo — the per-lens payload files (Step
      3), the scratch file Step 4 dedups from — lives alongside
      `state.json` in this same `<state-dir>`.
+   - **Readable only by the user who ran it, and removed when the run ends.**
+     Create `<state-dir>` with mode `0700`, not the process umask's default:
+     what it holds is the full diff and the complete contents of every
+     reviewed file, so on any machine with more than one account a
+     world-readable directory publishes the codebase under review to all of
+     them. And delete it as the last action of Step 10, after the report is
+     printed — durability is for surviving a restart *during* a run, not an
+     archive of every repository ever reviewed. Without that step the
+     directory only grows: one machine had accumulated tens of megabytes of
+     diffs across six repositories, none of it needed by anything.
 
    Say plainly what this buys and what it doesn't, in both directions:
    durability makes a run's state inspectable and lets it survive a
@@ -305,6 +315,17 @@ Two consequences worth stating at the point of use: `repoSupplied` is the
 field the consent gate tests (Step 6) — read that boolean rather than
 inferring trust from `source` — and a non-null `source` with an empty
 `commands` is a deliberate opt-out, not a failure to find anything.
+
+**The reviewed repo's `REVIEW.json` is read from the base revision, not from the
+working tree** — except under `--all`, where no base exists (see that row's trust
+note). This matters because the config is not passive data: its custom lenses reach
+the reviewer and the judge verbatim, its `disableDefaultLenses` can switch a built-in
+lens off, and its `verify` list gets executed. Read from the tree under review, a
+branch could rewrite the reviewer that is about to review it, and only `verify` is
+gated by the consent prompt. Two cases keep the working tree's copy and both are
+reported rather than silent: the base revision has no config at all (a repo adopting
+one for the first time), and the working tree's copy differs from the base's (the base
+one is used; the difference is what you are being told about).
 
 `configNotices` is the merged, deduplicated view of every notice
 `build-context.mjs`'s own config readers produced while parsing the reviewed
@@ -492,6 +513,17 @@ Each reviewer's prompt must be self-contained and include:
    every field rule that matters here — including that the reviewer must
    never include a `key`/`id` field, and that `{ "findings": [] }` is a
    valid, expected clean-pass result — do not restate or summarize them.
+
+**Say how the reviewer must return its result, in the prompt itself.** In some
+harnesses a subagent's final text does not come back to the caller at all: the
+orchestrator sees only that the agent finished, and the findings sit in that
+agent's own transcript. On one run all seven lenses completed and every one had to
+be asked a second time to send its JSON back over the messaging tool, which is
+seven wasted round trips for a fact that could have been one line of the prompt.
+So name the channel: if the environment delivers a subagent's return value to the
+caller, "return only that JSON object" is enough; if it does not, require the
+reviewer to send that same object through whatever message tool it has, addressed
+to the orchestrator. Either way the reviewer should never have to guess.
 
 Parse each reviewer's response as JSON matching that shape. If parsing
 fails, or the top-level shape doesn't match, retry that one reviewer once
@@ -1336,7 +1368,7 @@ priority rules, the per-severity rendering (the gate-excluded suffix, the
 template are all specified there; do not duplicate or reinterpret them
 here.
 
-Five things this step must still do, beyond what §5 itself specifies:
+Six things this step must still do, beyond what §5 itself specifies:
 
 - Actually run `git -C <repo> diff --stat` — `<repo>` is the same reviewed
   repo Step 2 resolved, not necessarily the orchestrator's own working
@@ -1397,6 +1429,15 @@ Five things this step must still do, beyond what §5 itself specifies:
   section always prints, including when the gate never ran — a skipped gate
   is a fact the human needs, not an absence to hide. Print each command's
   real captured output digest; never paraphrase or reconstruct one.
+- **Delete `<state-dir>` — last, after the report is on screen.** It holds the
+  full diff and the complete contents of every reviewed file (Step 1), and the
+  report is the only thing that needed to outlive the run. Do it after printing,
+  not before: the report is built from `state.findings`, so removing the
+  directory first would take the report's own source with it. Say in one line
+  that it was removed, so a human looking for the run's state knows it is gone
+  by design rather than missing. Leave it in place only when the run ended
+  abnormally — a killed session or an unhandled error — where it is the only
+  record of what happened.
 
 ## Agent fallback
 

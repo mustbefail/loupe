@@ -56,10 +56,12 @@ not just recent changes? Pass `--all` — `loupe` diffs against git's empty
 tree, so every tracked file is treated as newly added and gets reviewed. The
 repository still needs to be a git repo (that safety rule doesn't change);
 for a plain directory, run `git init && git add -A` first, then invoke
-`loupe --all`. Trust note: `loupe` still reads that repo's own `REVIEW.json`
-if it has one — its custom-lens instructions and `disableDefaultLenses` are
-honored the same as in any other mode — so only point `--all` at a
-repository whose `REVIEW.json` you trust.
+`loupe --all`. Trust note: `--all` is the one mode that reads that repo's own
+`REVIEW.json` from the working tree — everywhere else it comes from the base
+revision, so a branch cannot rewrite the reviewer that is about to review it.
+There is no base under `--all`, so that protection does not apply: its
+custom-lens instructions and `disableDefaultLenses` are honored as written on
+disk. Only point `--all` at a repository whose `REVIEW.json` you trust.
 
 ### Local development
 
@@ -124,6 +126,17 @@ each lens's checklist.
 On top of those, `loupe` picks up per-repo custom lenses from an optional
 `REVIEW.json` at the root of the repository being reviewed. If the file
 doesn't exist, only the built-in lenses run. Each entry becomes its own lens:
+
+**It is read from the base revision, not from your working tree.** The config
+decides which lenses exist, which built-ins are off, and which commands the
+verify gate runs, so reading it from the tree under review would let a branch
+change its own reviewer — and only `verify` is gated by a prompt. A config
+change therefore takes effect once it is on the base branch, which is where a
+human reviews it. Two cases fall back to the working tree, and both are
+reported in `configNotices` rather than applied quietly: the base has no config
+yet (`config-absent-from-base`), and your copy differs from the base's
+(`config-differs-from-base` — the base's is the one that ran). `--all` has no
+base and reads from disk.
 
 ```json
 {

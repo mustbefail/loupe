@@ -160,6 +160,12 @@ export function matchesInstruction(path, ins) {
 //   item-dropped          an individual lens or list element was rejected.
 //   verify-type-invalid   `verify` is present but is neither a string, an
 //                         array, nor `null`.
+//   config-absent-from-base  the base revision has no config, so the working
+//                         tree's was used. Never produced by parseConfig —
+//                         loadReviewConfig emits it when it resolves the text.
+//   config-differs-from-base  the working tree's config differs from the base
+//                         revision's. The base one was used. Also emitted by
+//                         loadReviewConfig, for the same reason.
 export function parseConfig(text) {
   const empty = { instructions: [], verify: { items: [], present: false }, disableDefaultLenses: [] }
   let parsed
@@ -283,10 +289,37 @@ function toLensDef(i, type) {
 // three. Each of those three still calls this — and therefore parseConfig —
 // separately, once per key it cares about; main() is what deduplicates the
 // resulting notices afterwards (see its own comment).
-function loadReviewConfig(repo, deps) {
+//
+// `rev`, when given, is the revision the config is read FROM — the merge-base,
+// passed down by main(). This is not a detail: the config decides how the review
+// runs. Its custom lenses reach the reviewer and the judge verbatim, its
+// `disableDefaultLenses` can switch a built-in lens off, and its `verify` list is
+// executed. Reading it out of the working tree therefore lets the branch under
+// review rewrite the reviewer that is about to review it, and two of those three
+// take effect with no prompt anywhere. Reading it from the base revision means a
+// branch can propose a config change and a human can see it, which is what
+// reviewing a config change is supposed to look like.
+//
+// Two cases keep the working tree's copy, both reported rather than silent:
+// the base has no config at all (a repo adopting one for the first time — the
+// alternative is a tool that does nothing the first time it is used), and `rev`
+// is absent, which is `--all` (no base exists to read, and that mode already
+// says to run it only on a repo you trust).
+function loadReviewConfig(repo, deps, rev = null) {
   const empty = { instructions: [], verify: { items: [], present: false }, disableDefaultLenses: [] }
   const file = join(repo, "REVIEW.json")
-  if (!deps.existsSync(file)) {
+  const onDisk = deps.existsSync(file) ? deps.readFileSync(file, "utf8") : null
+  const atBase = rev && deps.showAtRev ? deps.showAtRev(`${rev}:REVIEW.json`) : null
+
+  if (atBase != null) {
+    const notices = onDisk != null && onDisk !== atBase
+      ? [{ path: "REVIEW.json", reason: "config-differs-from-base" }]
+      : []
+    const parsed = parseConfig(atBase)
+    return { config: parsed.config, notices: [...notices, ...parsed.notices] }
+  }
+
+  if (onDisk == null) {
     // A leftover REVIEW.yaml from before this migration is not read at all —
     // this is the one legitimate surviving reference to that filename, and it
     // exists to tell a repo it has one, not to parse it.
@@ -295,7 +328,10 @@ function loadReviewConfig(repo, deps) {
     }
     return { config: empty, notices: [] }
   }
-  return parseConfig(deps.readFileSync(file, "utf8"))
+
+  const parsed = parseConfig(onDisk)
+  const notices = rev ? [{ path: "REVIEW.json", reason: "config-absent-from-base" }] : []
+  return { config: parsed.config, notices: [...notices, ...parsed.notices] }
 }
 
 // Bundled default lenses (correctness/security/performance/maintainability/
@@ -324,15 +360,15 @@ export function loadDefaultLenses(deps = { readFileSync, existsSync }) {
 
 // Per-repo custom lenses from the reviewed repo's own REVIEW.json. Tagged
 // type "custom".
-export function loadCustomInstructions(repo, deps = { readFileSync, existsSync }) {
-  const { config, notices } = loadReviewConfig(repo, deps)
+export function loadCustomInstructions(repo, deps = { readFileSync, existsSync }, rev = null) {
+  const { config, notices } = loadReviewConfig(repo, deps, rev)
   return { lenses: config.instructions.map((i) => toLensDef(i, "custom")), notices }
 }
 
 // The optional top-level `disableDefaultLenses` key: base-lens names the repo
 // wants turned off entirely. Names are matched case-insensitively in main().
-export function loadDisabledLenses(repo, deps = { readFileSync, existsSync }) {
-  const { config, notices } = loadReviewConfig(repo, deps)
+export function loadDisabledLenses(repo, deps = { readFileSync, existsSync }, rev = null) {
+  const { config, notices } = loadReviewConfig(repo, deps, rev)
   return { names: config.disableDefaultLenses, notices }
 }
 
@@ -454,10 +490,10 @@ export function parseMakefileTargets(text) {
 // Nothing the repo supplies is resolved under `--all`, its own `verify` list
 // included; only the caller's own `--verify` enables the gate there. The
 // rationale for that lives in SKILL.md's safety rules, not here.
-export function detectVerifyCommands(repo, { all = false } = {}, deps = { readFileSync, existsSync }) {
+export function detectVerifyCommands(repo, { all = false, rev = null } = {}, deps = { readFileSync, existsSync }) {
   if (all) return { commands: [], source: null, skipped: "all-mode", repoSupplied: false, notices: [] }
 
-  const { config, notices } = loadReviewConfig(repo, deps)
+  const { config, notices } = loadReviewConfig(repo, deps, rev)
   // `present` alone can't tell a real (if empty) `verify` list apart from a
   // `verify-type-invalid` one — parseConfig's `{ items, present }` shape is
   // identical for both (see its own comment). A type error must not resolve
@@ -696,14 +732,27 @@ function main() {
   const reviewable = allDiffs.filter((f) => f.diff.trim() && !generated.has(f.path))
   // Resolved on every invocation (cheap, idempotent) so the orchestrator's Step 7
   // never has to detect anything itself; `--all` suppresses autodetection.
-  const { notices: verifyNotices, ...verify } = detectVerifyCommands(repo, { all })
+  // The config is read from the merge-base, not from the working tree — see
+  // loadReviewConfig. Under `--all` there is no base to read from, so `rev` stays null
+  // and the working tree's copy is used, as that mode's own trust note says.
+  const configRev = all ? null : mergeBase
+  // Its own invocation rather than gitTry: a base revision that simply has no config is
+  // the ordinary first-adoption case, and `git show` reports that on stderr, which would
+  // otherwise print `fatal:` on a perfectly normal run.
+  const showAtRev = (spec) => {
+    try {
+      return execFileSync("git", ["show", spec], { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+    } catch { return null }
+  }
+  const configDeps = { readFileSync, existsSync, showAtRev }
+  const { notices: verifyNotices, ...verify } = detectVerifyCommands(repo, { all, rev: configRev }, configDeps)
   // Base lenses (bundled default.json) the repo disabled via `disableDefaultLenses`
   // (case-insensitive). Resolved before the early return below so `disabledLenses`
   // is still reported when nothing is reviewable — the repo disabled the lens
   // either way. Filtered against the real base-lens names (not merely echoing
   // what REVIEW.json requested) so a name that matches no base lens doesn't
   // falsely claim one was disabled.
-  const { names: requestedDisabledNames, notices: disabledNotices } = loadDisabledLenses(repo)
+  const { names: requestedDisabledNames, notices: disabledNotices } = loadDisabledLenses(repo, configDeps, configRev)
   const requestedDisabled = new Set(requestedDisabledNames.map((n) => n.toLowerCase()))
   let allBaseDefs, defaultNotices
   try {
@@ -727,7 +776,7 @@ function main() {
   // reviewable, and always disjoint from disabledLenses since a disabled base
   // lens is filtered out of `baseDefs` before this compares.
   const baseDefs = allBaseDefs.filter((d) => !requestedDisabled.has(d.name.toLowerCase()))
-  const { lenses: customDefs, notices: customNotices } = loadCustomInstructions(repo)
+  const { lenses: customDefs, notices: customNotices } = loadCustomInstructions(repo, configDeps, configRev)
   const customNames = new Set(customDefs.map((d) => d.name))
   const shadowedLenses = baseDefs.filter((d) => customNames.has(d.name)).map((d) => d.name)
 
