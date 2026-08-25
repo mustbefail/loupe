@@ -722,7 +722,13 @@ function main() {
   try {
     allDiffs = parseDiff(git("diff", "-M", committed ? `${mergeBase}..HEAD` : mergeBase))
   } finally {
-    if (intentToAdd.length) gitTry("reset", "-q", "HEAD", "--", ...intentToAdd)
+    // A failed unstage leaves intent-to-add entries in the index, so the tree looks dirty
+    // afterwards through no fault of the human. Say so rather than swallowing it — this is
+    // the one thing loupe changes about the repo, and "read-only" has to stay honest.
+    if (intentToAdd.length && gitTry("reset", "-q", "HEAD", "--", ...intentToAdd) == null) {
+      console.error(`loupe: could not unstage ${intentToAdd.length} intent-to-add path(s); `
+        + `run: git -C ${repo} reset -q HEAD -- <those paths>`)
+    }
   }
   const paths = allDiffs.map((f) => f.path).filter(Boolean)
   const attrGenerated = paths.length

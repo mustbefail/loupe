@@ -98,6 +98,13 @@ Parsed from the skill invocation's argument string. All are optional.
   keeps every read-only review genuinely read-only.
 - **Verification never reverts anything.** Step 7 repairs forward or
   reports — it has no revert path at all, under the git prohibitions above.
+- **One thing `loupe` changes about the repo, and it changes it back.** In working-tree
+  mode `build-context.mjs` marks untracked files intent-to-add so they appear in the
+  diff as new files, then unstages them; the index is left as it was found. Two honest
+  caveats: an abort between those two steps leaves the intent-to-add entries behind, and
+  a failed unstage is reported on stderr with the command to undo it rather than
+  swallowed. Nothing is ever lost either way, but a tree that looks staged afterwards
+  may be that and not your own work.
 - **Everything stays local.** `loupe` reads and writes only the working
   tree and its own durable, per-user state directory (Step 1). The only
   network egress is whatever Claude Code's own subagent calls already
