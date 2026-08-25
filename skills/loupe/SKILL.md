@@ -191,16 +191,28 @@ Parsed from the skill invocation's argument string. All are optional.
      writes outside the reviewed repo — the per-lens payload files (Step
      3), the scratch file Step 4 dedups from — lives alongside
      `state.json` in this same `<state-dir>`.
-   - **Readable only by the user who ran it, and removed when the run ends.**
-     Create `<state-dir>` with mode `0700`, not the process umask's default:
-     what it holds is the full diff and the complete contents of every
-     reviewed file, so on any machine with more than one account a
-     world-readable directory publishes the codebase under review to all of
-     them. And delete it as the last action of Step 10, after the report is
-     printed — durability is for surviving a restart *during* a run, not an
-     archive of every repository ever reviewed. Without that step the
-     directory only grows: one machine had accumulated tens of megabytes of
-     diffs across six repositories, none of it needed by anything.
+   - **Readable only by the user who ran it, and holding the codebase for as
+     short a time as the loop allows.** Create `<state-dir>` with mode
+     `0700`, not the process umask's default: what it holds is the full diff
+     and the complete contents of every reviewed file, so on a machine with
+     more than one account a world-readable directory publishes the code
+     under review to all of them.
+
+     Then keep the heavy part briefly and the light part durably, because the
+     two have opposite requirements. The per-lens payload files and the
+     build-context output *are* the codebase; they are needed only until each
+     reviewer has read its own slice, so **Step 3 deletes them as soon as
+     every reviewer has returned**. `state.json` is small — findings,
+     statuses, verdicts — and it is the thing durability exists for, so it
+     lives until **Step 10 removes the directory** after the report is
+     printed. A run that dies mid-loop therefore leaves behind the record
+     needed to understand it, and not a copy of the source.
+
+     Be plain that this is an instruction to the orchestrator and not
+     something the script enforces: nothing fails if a runtime skips it, and
+     the only symptom is a directory that grows. One machine had accumulated
+     tens of megabytes of diffs across six repositories that way, needed by
+     nothing.
 
    Say plainly what this buys and what it doesn't, in both directions:
    durability makes a run's state inspectable and lets it survive a
@@ -539,6 +551,15 @@ required schema — reply with only that JSON object, nothing else"). If it
 still doesn't parse, treat that lens's findings as `[]` for this iteration,
 note it in this iteration's progress narration, and continue — one bad
 reviewer response must never abort the run.
+
+**Then delete this iteration's per-lens payload files and the build-context
+output.** They are the reviewed repository's own source, written to disk only
+so a prompt did not have to carry it (item 3 above), and once every reviewer
+has read its slice nothing needs them again — the next iteration rebuilds
+them from a fresh diff. Keeping them until the end of the run would leave a
+complete copy of the codebase sitting in `<state-dir>` for the whole loop, and
+for however long a killed run's directory survives after it. `state.json`
+stays; it is small and it is what a restart needs (Step 1).
 
 ### Step 4 — Merge + dedup
 
